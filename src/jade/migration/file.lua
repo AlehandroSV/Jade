@@ -9,12 +9,19 @@ function M.listFiles()
     local files = {}
 
     local ok, iter, dir_obj = pcall(function()
-        return lfs or require("lfs"), lfs.dir(dir)
+        local lfs = require("lfs")
+        return lfs, lfs.dir(dir)
     end)
 
     if not ok then
-        -- Fallback: try to read directory using Lua patterns
-        local handle = io.popen('dir "' .. dir .. '" /b 2>nul')
+        -- Fallback: try to read directory using platform commands
+        local handle
+        -- Try Linux ls first, then Windows dir
+        handle = io.popen('ls "' .. dir .. '" 2>/dev/null')
+        if not handle or not handle:read("*a") then
+            if handle then handle:close() end
+            handle = io.popen('dir "' .. dir .. '" /b 2>nul')
+        end
         if handle then
             for filename in handle:lines() do
                 if filename:match("%.lua$") then
