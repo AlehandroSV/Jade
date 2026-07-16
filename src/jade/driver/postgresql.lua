@@ -99,7 +99,15 @@ function PostgreSQL:generateSelect(query)
                 bindings[#bindings + 1] = b
             end
         end
-        sql[#sql + 1] = "WHERE " .. table.concat(where_parts, " AND ")
+        local where_sql = table.concat(where_parts, " AND ")
+        -- Convert ? placeholders to $N for pgmoon
+        local idx = 1
+        where_sql = where_sql:gsub("%?", function()
+            local s = "$" .. idx
+            idx = idx + 1
+            return s
+        end)
+        sql[#sql + 1] = "WHERE " .. where_sql
     end
 
     if #query._orderBy > 0 then
