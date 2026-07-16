@@ -13,28 +13,7 @@ function M.listFiles()
         return lfs, lfs.dir(dir)
     end)
 
-    if not ok then
-        -- Fallback: try to read directory using platform commands
-        local handle
-        -- Try Linux ls first, then Windows dir
-        handle = io.popen('ls "' .. dir .. '" 2>/dev/null')
-        if not handle or not handle:read("*a") then
-            if handle then handle:close() end
-            handle = io.popen('dir "' .. dir .. '" /b 2>nul')
-        end
-        if handle then
-            for filename in handle:lines() do
-                if filename:match("%.lua$") then
-                    files[#files + 1] = {
-                        name = filename,
-                        path = dir .. "/" .. filename,
-                        timestamp = filename:match("^(%d+)_"),
-                    }
-                end
-            end
-            handle:close()
-        end
-    else
+    if ok then
         for filename in iter, dir_obj do
             if filename:match("%.lua$") then
                 files[#files + 1] = {
@@ -42,6 +21,49 @@ function M.listFiles()
                     path = dir .. "/" .. filename,
                     timestamp = filename:match("^(%d+)_"),
                 }
+            end
+        end
+    else
+        -- Fallback: try platform commands (ls on Linux, dir on Windows)
+        local handle = io.popen('ls "' .. dir .. '" 2>/dev/null')
+        if handle then
+            local first = handle:read("*l")
+            if first then
+                -- ls works (Linux/Mac)
+                if first:match("%.lua$") then
+                    files[#files + 1] = {
+                        name = first,
+                        path = dir .. "/" .. first,
+                        timestamp = first:match("^(%d+)_"),
+                    }
+                end
+                for filename in handle:lines() do
+                    if filename:match("%.lua$") then
+                        files[#files + 1] = {
+                            name = filename,
+                            path = dir .. "/" .. filename,
+                            timestamp = filename:match("^(%d+)_"),
+                        }
+                    end
+                end
+            end
+            handle:close()
+        end
+
+        if #files == 0 then
+            -- Try Windows dir command
+            handle = io.popen('dir "' .. dir .. '" /b 2>nul')
+            if handle then
+                for filename in handle:lines() do
+                    if filename:match("%.lua$") then
+                        files[#files + 1] = {
+                            name = filename,
+                            path = dir .. "/" .. filename,
+                            timestamp = filename:match("^(%d+)_"),
+                        }
+                    end
+                end
+                handle:close()
             end
         end
     end
