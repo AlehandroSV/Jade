@@ -1,5 +1,5 @@
 local Driver = require("jade.driver.base")
-local pg = require("luapgsql")
+local pgmoon = require("pgmoon")
 
 local PostgreSQL = {}
 PostgreSQL.__index = PostgreSQL
@@ -16,41 +16,42 @@ function PostgreSQL.new()
 end
 
 function PostgreSQL:connect(config)
-    local conninfo = string.format(
-        "host=%s port=%d dbname=%s user=%s password=%s",
-        config.host or "localhost",
-        config.port or 5432,
-        config.database,
-        config.user or "postgres",
-        config.password or ""
-    )
-    self._conn = pg.connect(conninfo)
-    if not self._conn then
-        error("Failed to connect to PostgreSQL")
+    local pg = pgmoon.new({
+        host = config.host or "localhost",
+        port = config.port or 5432,
+        database = config.database,
+        user = config.user or "postgres",
+        password = config.password or ""
+    })
+    local ok, err = pg:connect()
+    if not ok then
+        error("Failed to connect to PostgreSQL: " .. tostring(err))
     end
+    self._conn = pg
     return self
 end
 
 function PostgreSQL:disconnect()
     if self._conn then
-        self._conn:close()
+        self._conn:disconnect()
         self._conn = nil
     end
 end
 
 function PostgreSQL:execute(sql, bindings)
-    local stmt = self._conn:prepare(sql)
     if bindings and #bindings > 0 then
-        stmt:bind_values(table.unpack(bindings))
+        local res, err = self._conn:query(sql, bindings)
+        if not res then
+            error("Query failed: " .. tostring(err))
+        end
+        return res
+    else
+        local res, err = self._conn:query(sql)
+        if not res then
+            error("Query failed: " .. tostring(err))
+        end
+        return res
     end
-    local result = stmt:exec()
-    stmt:close()
-
-    local rows = {}
-    for row in result:rows() do
-        rows[#rows + 1] = row
-    end
-    return rows
 end
 
 function PostgreSQL:mapType(column_type)
