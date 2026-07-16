@@ -47,7 +47,7 @@ end
 function PostgreSQL:execute(sql, bindings)
     self:_ensureConnected()
     if bindings and #bindings > 0 then
-        local res, err = self._conn:query(sql, bindings)
+        local res, err = self._conn:query(sql, table.unpack(bindings))
         if not res then
             error("Query failed: " .. tostring(err))
         end
