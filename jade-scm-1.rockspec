@@ -92,6 +92,17 @@ build = {
         -- Introspection
         ["jade.introspection"] = "src/jade/introspection/init.lua",
         ["jade.introspection.reader"] = "src/jade/introspection/reader.lua",
-        ["jade.introspection.converter"] = "src/jade/introspection/converter.lua",
+        [        ["jade.introspection.converter"] = "src/jade/introspection/converter.lua",
+
+        -- Errors
+        ["jade.errors"] = "src/jade/errors/init.lua",
+        ["jade.errors.base"] = "src/jade/errors/base.lua",
+        ["jade.errors.connection"] = "src/jade/errors/connection.lua",
+        ["jade.errors.query"] = "src/jade/errors/query.lua",
+        ["jade.errors.migration"] = "src/jade/errors/migration.lua",
+        ["jade.errors.introspection"] = "src/jade/errors/introspection.lua",
+        ["jade.errors.integrity"] = "src/jade/errors/integrity.lua",
+        ["jade.errors.security"] = "src/jade/errors/security.lua",,
     }
 }
+

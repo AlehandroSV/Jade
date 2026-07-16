@@ -159,7 +159,8 @@ local test_files = {
     "security/sanitizer_spec.lua",
     "security/validator_spec.lua",
     "security/escape_spec.lua",
-    "introspection/converter_spec.lua",
+            "introspection/converter_spec.lua",
+        "errors/errors_spec.lua",
 }
 
 print("=== Jade ORM Test Suite ===")
@@ -188,3 +189,4 @@ else
 end
 
 os.exit(M.failed > 0 and 1 or 0)
+
