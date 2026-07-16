@@ -1,0 +1,13 @@
+local types = {
+    String = require("jade.types.string"),
+    Integer = require("jade.types.integer"),
+    Boolean = require("jade.types.boolean"),
+    Text = require("jade.types.text"),
+    Timestamp = require("jade.types.timestamp"),
+    Float = require("jade.types.float"),
+    Decimal = require("jade.types.decimal"),
+    UUID = require("jade.types.uuid"),
+    Date = require("jade.types.date"),
+}
+
+return types

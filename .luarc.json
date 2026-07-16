@@ -1,0 +1,12 @@
+{
+    "runtime": {
+        "version": "LuaJIT"
+    },
+    "diagnostics": {
+        "globals": ["vim", "jit", "unpack", "table"]
+    },
+    "workspace": {
+        "library": ["src"]
+    },
+    "unusedLocalExclude": ["_*"]
+}

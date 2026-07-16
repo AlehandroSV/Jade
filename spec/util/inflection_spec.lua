@@ -1,0 +1,25 @@
+describe("Inflection", function()
+    local inflection = require("jade.util.inflection")
+
+    it("converts snake_case to camelCase", function()
+        assert.are.equal("userName", inflection.snake_to_camel("user_name"))
+        assert.are.equal("createdAt", inflection.snake_to_camel("created_at"))
+        assert.are.equal("firstName", inflection.snake_to_camel("first_name"))
+    end)
+
+    it("converts camelCase to snake_case", function()
+        assert.are.equal("user_name", inflection.camel_to_snake("userName"))
+        assert.are.equal("created_at", inflection.camel_to_snake("createdAt"))
+        assert.are.equal("first_name", inflection.camel_to_snake("firstName"))
+    end)
+
+    it("pluralizes words", function()
+        assert.are.equal("users", inflection.pluralize("user"))
+        assert.are.equal("addresses", inflection.pluralize("address"))
+    end)
+
+    it("singularizes words", function()
+        assert.are.equal("user", inflection.singularize("users"))
+        assert.are.equal("address", inflection.singularize("addresses"))
+    end)
+end)

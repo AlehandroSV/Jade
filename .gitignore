@@ -1,0 +1,24 @@
+# Lua
+*.lua
+!src/**/*.lua
+!spec/**/*.lua
+!fixtures/**/*.lua
+
+# LuaRocks
+*.rock
+*.rockspec.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+.busted
+coverage/
