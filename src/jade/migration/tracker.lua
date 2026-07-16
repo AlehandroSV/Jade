@@ -1,4 +1,3 @@
-local Jade = require("jade")
 local M = {}
 
 function M.createTrackerTable(driver)
@@ -32,7 +31,12 @@ function M.getAppliedMigrations(driver)
 end
 
 function M.recordMigration(driver, name)
-    local version = Jade._VERSION or "unknown"
+    -- Get Jade version without requiring jade (avoids circular dependency)
+    local version = "unknown"
+    local ok, versionModule = pcall(require, "jade._VERSION")
+    if ok and versionModule then
+        version = versionModule
+    end
     local sql = "INSERT INTO _jade_migrations (name, jade_version) VALUES ($1, $2)"
     return driver:execute(sql, { name, version })
 end
