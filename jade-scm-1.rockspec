@@ -83,5 +83,10 @@ build = {
         ["jade.i18n"] = "src/jade/i18n/init.lua",
         ["jade.i18n.en"] = "src/jade/i18n/en.lua",
         ["jade.i18n.pt-br"] = "src/jade/i18n/pt-br.lua",
+
+        -- Security
+        ["jade.security"] = "src/jade/security/init.lua",
+        ["jade.security.sanitizer"] = "src/jade/security/sanitizer.lua",
+        ["jade.security.validator"] = "src/jade/security/validator.lua",
     }
 }

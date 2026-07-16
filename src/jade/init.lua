@@ -33,6 +33,9 @@ Jade.transaction = require("jade.transaction.manager")
 -- Soft Delete
 Jade.SoftDelete = require("jade.entity.soft_delete")
 
+-- Security
+Jade.security = require("jade.security")
+
 -- Driver registry
 Jade.drivers = require("jade.driver")
 

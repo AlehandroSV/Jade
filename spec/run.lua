@@ -123,6 +123,12 @@ M.assert.is_function = function(val)
         error(string.format("Expected function, got %s", type(val)), 3)
     end
 end
+M.assert.has_error = function(fn)
+    local ok, err = pcall(fn)
+    if ok then
+        error("Expected error, but no error was raised", 3)
+    end
+end
 
 -- Make available globally for test files
 describe = M.describe
@@ -150,6 +156,9 @@ local test_files = {
     "migration/generator_spec.lua",
     "transaction/transaction_spec.lua",
     "i18n/i18n_spec.lua",
+    "security/sanitizer_spec.lua",
+    "security/validator_spec.lua",
+    "security/escape_spec.lua",
 }
 
 print("=== Jade ORM Test Suite ===")
