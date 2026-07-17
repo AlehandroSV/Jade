@@ -33,7 +33,7 @@ end
 function Pool:_isConnectionAlive(conn)
     -- Try a simple ping to check if connection is alive
     local ok, result = pcall(function()
-        return conn:query("SELECT 1")
+        return self.driver:executeWithConnection(conn, "SELECT 1")
     end)
     return ok and result ~= nil
 end
@@ -46,7 +46,11 @@ function Pool:_cleanIdleConnections()
         if not entry.in_use and (now - entry.last_used) > self.idle_timeout then
             -- Connection is idle too long, close it
             pcall(function()
-                self.driver:disconnect(entry.connection)
+                if self.driver.closeConnection then
+                    self.driver:closeConnection(entry.connection)
+                else
+                    self.driver:disconnect(entry.connection)
+                end
             end)
             table.remove(self.connections, i)
             self.created = self.created - 1
@@ -72,7 +76,11 @@ function Pool:acquire()
             else
                 -- Connection is dead, remove it
                 pcall(function()
-                    self.driver:disconnect(conn.connection)
+                    if self.driver.closeConnection then
+                        self.driver:closeConnection(conn.connection)
+                    else
+                        self.driver:disconnect(conn.connection)
+                    end
                 end)
                 table.remove(self.connections, i)
                 self.created = self.created - 1
@@ -114,7 +122,11 @@ function Pool:close()
     for _, entry in ipairs(self.connections) do
         if entry.connection then
             pcall(function()
-                self.driver:disconnect(entry.connection)
+                if self.driver.closeConnection then
+                    self.driver:closeConnection(entry.connection)
+                else
+                    self.driver:disconnect(entry.connection)
+                end
             end)
         end
     end

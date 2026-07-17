@@ -1,32 +1,37 @@
 local Driver = require("jade.driver.base")
-local pgmoon = require("pgmoon")
 local Pool = require("jade.driver.pool")
-local Quoting = require("jade.util.quoting")
 
-local PostgreSQL = {}
-PostgreSQL.__index = PostgreSQL
+local MySQL = {}
+MySQL.__index = MySQL
 
-setmetatable(PostgreSQL, {
+setmetatable(MySQL, {
     __index = Driver,
 })
 
-function PostgreSQL.new()
+function MySQL.new()
     local self = Driver.new()
-    setmetatable(self, PostgreSQL)
+    setmetatable(self, MySQL)
     self._conn = nil
     self._config = nil
     self._pool = nil
+    self._env = nil
     return self
 end
 
-function PostgreSQL:connect(config)
+function MySQL:connect(config)
     self._config = {
         host = config.host or "localhost",
-        port = config.port or 5432,
+        port = config.port or 3306,
         database = config.database,
-        user = config.user or "postgres",
+        user = config.user or "root",
         password = config.password or ""
     }
+
+    -- Initialize luasql environment
+    if not self._env then
+        local mysql = require("luasql.mysql")
+        self._env = mysql.mysql()
+    end
 
     -- Initialize connection pool if pool_size is specified
     if config.pool_size then
@@ -40,82 +45,122 @@ function PostgreSQL:connect(config)
     return self
 end
 
-function PostgreSQL:_ensureConnected()
+function MySQL:_ensureConnected()
     if self._conn then return end
-    local pg = pgmoon.new(self._config)
-    local ok, err = pg:connect()
-    if not ok then
-        error("Failed to connect to PostgreSQL: " .. tostring(err))
+
+    -- Initialize luasql environment if not already done
+    if not self._env then
+        local mysql = require("luasql.mysql")
+        self._env = mysql.mysql()
     end
-    self._conn = pg
+
+    local conn, err = self._env:connect(
+        self._config.database,
+        self._config.user,
+        self._config.password,
+        self._config.host,
+        self._config.port
+    )
+    if not conn then
+        error("Failed to connect to MySQL: " .. tostring(err))
+    end
+    self._conn = conn
 end
 
-function PostgreSQL:disconnect()
+function MySQL:disconnect()
     if self._pool then
         self._pool:close()
         self._pool = nil
     end
     if self._conn then
-        self._conn:disconnect()
+        self._conn:close()
         self._conn = nil
+    end
+    if self._env then
+        self._env:close()
+        self._env = nil
     end
 end
 
 -- Close a single connection (used by pool)
-function PostgreSQL:closeConnection(conn)
+function MySQL:closeConnection(conn)
     if conn then
-        conn:disconnect()
+        conn:close()
     end
+end
+
+-- Quote identifier with backticks for MySQL
+function MySQL:quoteIdentifier(name)
+    return "`" .. name:gsub("`", "``") .. "`"
 end
 
 -- Transaction methods
-function PostgreSQL:getConnection()
-    local pg = pgmoon.new(self._config)
-    local ok, err = pg:connect()
-    if not ok then
-        error("Failed to connect to PostgreSQL: " .. tostring(err))
+function MySQL:getConnection()
+    local conn, err = self._env:connect(
+        self._config.database,
+        self._config.user,
+        self._config.password,
+        self._config.host,
+        self._config.port
+    )
+    if not conn then
+        error("Failed to connect to MySQL: " .. tostring(err))
     end
-    return pg
+    return conn
 end
 
-function PostgreSQL:beginTransaction(conn)
-    local res, err = conn:query("BEGIN")
+function MySQL:beginTransaction(conn)
+    local res, err = conn:execute("START TRANSACTION")
     if not res then
         error("Failed to begin transaction: " .. tostring(err))
     end
 end
 
-function PostgreSQL:commitTransaction(conn)
-    local res, err = conn:query("COMMIT")
+function MySQL:commitTransaction(conn)
+    local res, err = conn:execute("COMMIT")
     if not res then
         error("Failed to commit transaction: " .. tostring(err))
     end
 end
 
-function PostgreSQL:rollbackTransaction(conn)
-    local res, err = conn:query("ROLLBACK")
+function MySQL:rollbackTransaction(conn)
+    local res, err = conn:execute("ROLLBACK")
     if not res then
         error("Failed to rollback transaction: " .. tostring(err))
     end
 end
 
-function PostgreSQL:executeWithConnection(conn, sql, bindings)
-    if bindings and #bindings > 0 then
-        local res, err = conn:query(sql, table.unpack(bindings))
-        if not res then
-            error("Query failed: " .. tostring(err))
-        end
-        return res
-    else
-        local res, err = conn:query(sql)
-        if not res then
-            error("Query failed: " .. tostring(err))
-        end
-        return res
+-- Helper to convert ? placeholders to :n style for luasql
+local function convertPlaceholders(sql, bindings)
+    if not bindings or #bindings == 0 then
+        return sql, nil
     end
+    local params = {}
+    local idx = 1
+    sql = sql:gsub("%?", function()
+        local name = "p" .. idx
+        params[name] = bindings[idx]
+        idx = idx + 1
+        return ":" .. name
+    end)
+    return sql, params
 end
 
-function PostgreSQL:execute(sql, bindings)
+function MySQL:executeWithConnection(conn, sql, bindings)
+    local converted_sql, params = convertPlaceholders(sql, bindings)
+    local res, err
+    if params then
+        res, err = conn:execute(converted_sql, params)
+    else
+        res, err = conn:execute(converted_sql)
+    end
+    if not res then
+        error("Query failed: " .. tostring(err))
+    end
+    return res
+end
+
+function MySQL:execute(sql, bindings)
     -- Use pool if available
     if self._pool then
         return self._pool:execute(sql, bindings)
@@ -123,54 +168,49 @@ function PostgreSQL:execute(sql, bindings)
 
     -- Otherwise use shared connection
     self:_ensureConnected()
-    if bindings and #bindings > 0 then
-        local res, err = self._conn:query(sql, table.unpack(bindings))
-        if not res then
-            error("Query failed: " .. tostring(err))
-        end
-        return res
+    local converted_sql, params = convertPlaceholders(sql, bindings)
+    local res, err
+    if params then
+        res, err = self._conn:execute(converted_sql, params)
     else
-        local res, err = self._conn:query(sql)
-        if not res then
-            error("Query failed: " .. tostring(err))
-        end
-        return res
+        res, err = self._conn:execute(converted_sql)
     end
+    if not res then
+        error("Query failed: " .. tostring(err))
+    end
+    return res
 end
 
-function PostgreSQL:mapType(column_type)
+function MySQL:mapType(column_type)
     local map = {
         string = "VARCHAR(" .. (column_type.length or 255) .. ")",
         text = "TEXT",
+        mediumtext = "MEDIUMTEXT",
+        longtext = "LONGTEXT",
         integer = "INTEGER",
-        bigint = "BIGSERIAL",
-        float = "DOUBLE PRECISION",
-        decimal = "NUMERIC(" .. (column_type.precision or 10) .. "," .. (column_type.scale or 2) .. ")",
-        boolean = "BOOLEAN",
-        timestamp = "TIMESTAMPTZ",
+        tinyint = "TINYINT",
+        smallint = "SMALLINT",
+        bigint = "BIGINT",
+        float = "DOUBLE",
+        decimal = "DECIMAL(" .. (column_type.precision or 10) .. "," .. (column_type.scale or 2) .. ")",
+        boolean = "TINYINT(1)",
+        timestamp = "TIMESTAMP",
         date = "DATE",
-        uuid = "UUID",
-        json = "JSONB",
+        datetime = "DATETIME",
+        json = "JSON",
     }
     return map[column_type.type] or "TEXT"
 end
 
-function PostgreSQL:dropTableCascade()
+function MySQL:dropTableCascade()
+    return false
+end
+
+function MySQL:supportsAutoIncrement()
     return true
 end
 
--- Helper to convert ? placeholders to $N for pgmoon
-local function convertPlaceholders(sql, bindings, start_idx)
-    local idx = start_idx or 1
-    sql = sql:gsub("%?", function()
-        local s = "$" .. idx
-        idx = idx + 1
-        return s
-    end)
-    return sql, idx
-end
-
-function PostgreSQL:generateSelect(query)
+function MySQL:generateSelect(query)
     local sql = {}
     local bindings = {}
 
@@ -187,23 +227,16 @@ function PostgreSQL:generateSelect(query)
     end
 
     -- FROM clause
-    sql[#sql + 1] = "FROM " .. Quoting.quoteIdentifier(query._table)
+    sql[#sql + 1] = "FROM " .. self:quoteIdentifier(query._table)
 
     -- JOIN clauses
     if #query._joins > 0 then
         for _, join in ipairs(query._joins) do
-            local join_sql = join.type .. " JOIN " .. Quoting.quoteIdentifier(join.table) .. " ON "
+            local join_sql = join.type .. " JOIN " .. self:quoteIdentifier(join.table) .. " ON "
             local on_sql, on_bindings = join.on:compile()
             for _, b in ipairs(on_bindings) do
                 bindings[#bindings + 1] = b
             end
-            -- Convert placeholders in ON clause
-            local idx = #bindings - #on_bindings + 1
-            on_sql = on_sql:gsub("%?", function()
-                local s = "$" .. idx
-                idx = idx + 1
-                return s
-            end)
             sql[#sql + 1] = join_sql .. on_sql
         end
     end
@@ -218,10 +251,7 @@ function PostgreSQL:generateSelect(query)
                 bindings[#bindings + 1] = b
             end
         end
-        local where_sql = table.concat(where_parts, " AND ")
-        -- Convert ? placeholders to $N for pgmoon
-        where_sql = convertPlaceholders(where_sql, bindings, 1)
-        sql[#sql + 1] = "WHERE " .. where_sql
+        sql[#sql + 1] = "WHERE " .. table.concat(where_parts, " AND ")
     end
 
     -- GROUP BY clause
@@ -232,7 +262,7 @@ function PostgreSQL:generateSelect(query)
             if type(col) == "table" and col._column then
                 col_name = col._column
             end
-            group_parts[#group_parts + 1] = Quoting.quoteIdentifier(col_name)
+            group_parts[#group_parts + 1] = self:quoteIdentifier(col_name)
         end
         sql[#sql + 1] = "GROUP BY " .. table.concat(group_parts, ", ")
     end
@@ -247,17 +277,14 @@ function PostgreSQL:generateSelect(query)
                 bindings[#bindings + 1] = b
             end
         end
-        local having_sql = table.concat(having_parts, " AND ")
-        -- Convert ? placeholders to $N for pgmoon
-        having_sql = convertPlaceholders(having_sql, bindings, 1)
-        sql[#sql + 1] = "HAVING " .. having_sql
+        sql[#sql + 1] = "HAVING " .. table.concat(having_parts, " AND ")
     end
 
     -- ORDER BY clause
     if #query._orderBy > 0 then
         local order_parts = {}
         for _, o in ipairs(query._orderBy) do
-            order_parts[#order_parts + 1] = Quoting.quoteIdentifier(o.column) .. " " .. o.dir
+            order_parts[#order_parts + 1] = self:quoteIdentifier(o.column) .. " " .. o.dir
         end
         sql[#sql + 1] = "ORDER BY " .. table.concat(order_parts, ", ")
     end
@@ -275,22 +302,20 @@ function PostgreSQL:generateSelect(query)
     return table.concat(sql, " "), bindings
 end
 
-function PostgreSQL:generateInsert(table_name, data, entity)
+function MySQL:generateInsert(table_name, data, entity)
     local columns = {}
     local placeholders = {}
     local bindings = {}
-    local i = 1
 
     for key, value in pairs(data) do
-        columns[#columns + 1] = Quoting.quoteIdentifier(key)
-        placeholders[#placeholders + 1] = "$" .. i
+        columns[#columns + 1] = self:quoteIdentifier(key)
+        placeholders[#placeholders + 1] = "?"
         bindings[#bindings + 1] = value
-        i = i + 1
     end
 
     local sql = string.format(
-        "INSERT INTO %s (%s) VALUES (%s) RETURNING *",
-        Quoting.quoteIdentifier(table_name),
+        "INSERT INTO %s (%s) VALUES (%s)",
+        self:quoteIdentifier(table_name),
         table.concat(columns, ", "),
         table.concat(placeholders, ", ")
     )
@@ -298,15 +323,13 @@ function PostgreSQL:generateInsert(table_name, data, entity)
     return sql, bindings
 end
 
-function PostgreSQL:generateUpdate(table_name, data, where)
+function MySQL:generateUpdate(table_name, data, where)
     local set_parts = {}
     local bindings = {}
-    local i = 1
 
     for key, value in pairs(data) do
-        set_parts[#set_parts + 1] = Quoting.quoteIdentifier(key) .. " = $" .. i
+        set_parts[#set_parts + 1] = self:quoteIdentifier(key) .. " = ?"
         bindings[#bindings + 1] = value
-        i = i + 1
     end
 
     local where_sql, where_bindings = where:compile()
@@ -314,17 +337,9 @@ function PostgreSQL:generateUpdate(table_name, data, where)
         bindings[#bindings + 1] = b
     end
 
-    -- Replace ? with $N in where clause
-    local idx = i
-    where_sql = where_sql:gsub("%?", function()
-        local s = "$" .. idx
-        idx = idx + 1
-        return s
-    end)
-
     local sql = string.format(
-        "UPDATE %s SET %s WHERE %s RETURNING *",
-        Quoting.quoteIdentifier(table_name),
+        "UPDATE %s SET %s WHERE %s",
+        self:quoteIdentifier(table_name),
         table.concat(set_parts, ", "),
         where_sql
     )
@@ -332,23 +347,26 @@ function PostgreSQL:generateUpdate(table_name, data, where)
     return sql, bindings
 end
 
-function PostgreSQL:generateDelete(table_name, where)
+function MySQL:generateDelete(table_name, where)
     local where_sql, bindings = where:compile()
 
-    local idx = 1
-    where_sql = where_sql:gsub("%?", function()
-        local s = "$" .. idx
-        idx = idx + 1
-        return s
-    end)
-
     local sql = string.format(
-        "DELETE FROM %s WHERE %s RETURNING *",
-        Quoting.quoteIdentifier(table_name),
+        "DELETE FROM %s WHERE %s",
+        self:quoteIdentifier(table_name),
         where_sql
     )
 
     return sql, bindings
 end
 
-return PostgreSQL
+function MySQL:getLastInsertId()
+    self:_ensureConnected()
+    local res, err = self._conn:execute("SELECT LAST_INSERT_ID() as id")
+    if not res then
+        error("Failed to get last insert id: " .. tostring(err))
+    end
+    local row = res:fetch({}, "a")
+    return row and row.id
+end
+
+return MySQL

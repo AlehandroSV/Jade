@@ -13,7 +13,7 @@ function Schema.createTable(driver, name, fn)
     driver:execute(sql)
 
     -- Execute CREATE INDEX statements separately
-    local index_statements = tbl:indexSQL()
+    local index_statements = tbl:indexSQL(driver)
     for _, idx_sql in ipairs(index_statements) do
         driver:execute(idx_sql)
     end

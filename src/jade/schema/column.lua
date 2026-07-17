@@ -1,13 +1,16 @@
 local Column = {}
 Column.__index = Column
 
-function Column.new(_, type_name, length)
+function Column.new(_, type_name, length, precision, scale)
     local col = setmetatable({
         type = type_name,
         length = length,
+        precision = precision,
+        scale = scale,
         _nullable = true,
         _unique = false,
         _primary_key = false,
+        _auto_increment = false,
         _default = nil,
         _references = nil,
         _name = nil,
@@ -19,6 +22,11 @@ end
 function Column:primaryKey()
     self._primary_key = true
     self._nullable = false
+    return self
+end
+
+function Column:autoIncrement()
+    self._auto_increment = true
     return self
 end
 
@@ -44,6 +52,12 @@ end
 
 function Column:references(tbl, column)
     self._references = { table = tbl, column = column or "id" }
+    return self
+end
+
+function Column:setPrecision(precision, scale)
+    self.precision = precision
+    self.scale = scale
     return self
 end
 

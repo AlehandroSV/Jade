@@ -17,6 +17,12 @@ description = {
 dependencies = {
     "lua >= 5.1, < 5.5"
 }
+
+-- Optional dependencies for database drivers
+-- Uncomment the ones you need:
+-- "luasql-postgres",    -- PostgreSQL driver
+-- "luasql-mysql",       -- MySQL driver
+-- "luasql-sqlite3",     -- SQLite driver
 build = {
     type = "builtin",
     modules = {
@@ -49,6 +55,8 @@ build = {
         ["jade.driver"] = "src/jade/driver/init.lua",
         ["jade.driver.base"] = "src/jade/driver/base.lua",
         ["jade.driver.postgresql"] = "src/jade/driver/postgresql.lua",
+        ["jade.driver.mysql"] = "src/jade/driver/mysql.lua",
+        ["jade.driver.pool"] = "src/jade/driver/pool.lua",
         ["jade.migration"] = "src/jade/migration/init.lua",
         ["jade.migration.tracker"] = "src/jade/migration/tracker.lua",
         ["jade.migration.runner"] = "src/jade/migration/runner.lua",
