@@ -140,6 +140,7 @@ assert = M.assert
 local test_files = {
     "types/column_spec.lua",
     "types/types_spec.lua",
+    "types/luals_spec.lua",
     "schema/declarative_spec.lua",
     "query/expression_spec.lua",
     "query/condition_spec.lua",
