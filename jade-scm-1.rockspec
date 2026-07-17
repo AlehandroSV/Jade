@@ -26,6 +26,7 @@ build = {
         ["jade.schema"] = "src/jade/schema/init.lua",
         ["jade.schema.column"] = "src/jade/schema/column.lua",
         ["jade.schema.table"] = "src/jade/schema/table.lua",
+        ["jade.schema.declarative"] = "src/jade/schema/declarative.lua",
         ["jade.types"] = "src/jade/types/init.lua",
         ["jade.types.string"] = "src/jade/types/string.lua",
         ["jade.types.integer"] = "src/jade/types/integer.lua",
