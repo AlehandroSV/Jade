@@ -1,0 +1,350 @@
+local Driver = require("jade.driver.base")
+local mysql = require("luasql.mysql")
+local Pool = require("jade.driver.pool")
+
+local MySQL = {}
+MySQL.__index = MySQL
+
+setmetatable(MySQL, {
+    __index = Driver,
+})
+
+function MySQL.new()
+    local self = Driver.new()
+    setmetatable(self, MySQL)
+    self._conn = nil
+    self._config = nil
+    self._pool = nil
+    self._env = mysql.mysql()
+    return self
+end
+
+function MySQL:connect(config)
+    self._config = {
+        host = config.host or "localhost",
+        port = config.port or 3306,
+        database = config.database,
+        user = config.user or "root",
+        password = config.password or ""
+    }
+
+    -- Initialize connection pool if pool_size is specified
+    if config.pool_size then
+        self._pool = Pool.new(self, {
+            max_size = config.pool_size or 10,
+            min_size = config.pool_min or 2,
+            idle_timeout = config.pool_timeout or 300,
+        })
+    end
+
+    return self
+end
+
+function MySQL:_ensureConnected()
+    if self._conn then return end
+    local conn, err = self._env:connect(
+        self._config.database,
+        self._config.user,
+        self._config.password,
+        self._config.host,
+        self._config.port
+    )
+    if not conn then
+        error("Failed to connect to MySQL: " .. tostring(err))
+    end
+    self._conn = conn
+end
+
+function MySQL:disconnect()
+    if self._pool then
+        self._pool:close()
+        self._pool = nil
+    end
+    if self._conn then
+        self._conn:close()
+        self._conn = nil
+    end
+    if self._env then
+        self._env:close()
+        self._env = nil
+    end
+end
+
+-- Transaction methods
+function MySQL:getConnection()
+    local conn, err = self._env:connect(
+        self._config.database,
+        self._config.user,
+        self._config.password,
+        self._config.host,
+        self._config.port
+    )
+    if not conn then
+        error("Failed to connect to MySQL: " .. tostring(err))
+    end
+    return conn
+end
+
+function MySQL:beginTransaction(conn)
+    local res, err = conn:execute("START TRANSACTION")
+    if not res then
+        error("Failed to begin transaction: " .. tostring(err))
+    end
+end
+
+function MySQL:commitTransaction(conn)
+    local res, err = conn:execute("COMMIT")
+    if not res then
+        error("Failed to commit transaction: " .. tostring(err))
+    end
+end
+
+function MySQL:rollbackTransaction(conn)
+    local res, err = conn:execute("ROLLBACK")
+    if not res then
+        error("Failed to rollback transaction: " .. tostring(err))
+    end
+end
+
+function MySQL:executeWithConnection(conn, sql, bindings)
+    if bindings and #bindings > 0 then
+        -- Convert ? placeholders to :n style for luasql
+        local params = {}
+        local idx = 1
+        sql = sql:gsub("%?", function()
+            local name = "p" .. idx
+            params[name] = bindings[idx]
+            idx = idx + 1
+            return ":" .. name
+        end)
+        local res, err = conn:execute(sql, params)
+        if not res then
+            error("Query failed: " .. tostring(err))
+        end
+        return res
+    else
+        local res, err = conn:execute(sql)
+        if not res then
+            error("Query failed: " .. tostring(err))
+        end
+        return res
+    end
+end
+
+function MySQL:execute(sql, bindings)
+    -- Use pool if available
+    if self._pool then
+        return self._pool:execute(sql, bindings)
+    end
+
+    -- Otherwise use shared connection
+    self:_ensureConnected()
+    if bindings and #bindings > 0 then
+        -- Convert ? placeholders to :n style for luasql
+        local params = {}
+        local idx = 1
+        sql = sql:gsub("%?", function()
+            local name = "p" .. idx
+            params[name] = bindings[idx]
+            idx = idx + 1
+            return ":" .. name
+        end)
+        local res, err = self._conn:execute(sql, params)
+        if not res then
+            error("Query failed: " .. tostring(err))
+        end
+        return res
+    else
+        local res, err = self._conn:execute(sql)
+        if not res then
+            error("Query failed: " .. tostring(err))
+        end
+        return res
+    end
+end
+
+function MySQL:mapType(column_type)
+    local map = {
+        string = "VARCHAR(" .. (column_type.length or 255) .. ")",
+        text = "TEXT",
+        mediumtext = "MEDIUMTEXT",
+        longtext = "LONGTEXT",
+        integer = "INTEGER",
+        tinyint = "TINYINT",
+        smallint = "SMALLINT",
+        bigint = "BIGINT",
+        float = "DOUBLE",
+        decimal = "DECIMAL(" .. (column_type.precision or 10) .. "," .. (column_type.scale or 2) .. ")",
+        boolean = "TINYINT(1)",
+        timestamp = "TIMESTAMP",
+        date = "DATE",
+        datetime = "DATETIME",
+        json = "JSON",
+    }
+    return map[column_type.type] or "TEXT"
+end
+
+function MySQL:dropTableCascade()
+    return false
+end
+
+function MySQL:generateSelect(query)
+    local sql = {}
+    local bindings = {}
+
+    -- SELECT clause with DISTINCT
+    local select_prefix = "SELECT"
+    if query._distinct then
+        select_prefix = "SELECT DISTINCT"
+    end
+
+    if #query._select > 0 then
+        sql[#sql + 1] = select_prefix .. " " .. table.concat(query._select, ", ")
+    else
+        sql[#sql + 1] = select_prefix .. " *"
+    end
+
+    -- FROM clause
+    sql[#sql + 1] = "FROM `" .. query._table .. "`"
+
+    -- JOIN clauses
+    if #query._joins > 0 then
+        for _, join in ipairs(query._joins) do
+            local join_sql = join.type .. " JOIN `" .. join.table .. "` ON "
+            local on_sql, on_bindings = join.on:compile()
+            for _, b in ipairs(on_bindings) do
+                bindings[#bindings + 1] = b
+            end
+            sql[#sql + 1] = join_sql .. on_sql
+        end
+    end
+
+    -- WHERE clause
+    if #query._where > 0 then
+        local where_parts = {}
+        for _, cond in ipairs(query._where) do
+            local sql_part, bind = cond:compile()
+            where_parts[#where_parts + 1] = sql_part
+            for _, b in ipairs(bind) do
+                bindings[#bindings + 1] = b
+            end
+        end
+        sql[#sql + 1] = "WHERE " .. table.concat(where_parts, " AND ")
+    end
+
+    -- GROUP BY clause
+    if #query._groupBy > 0 then
+        local group_parts = {}
+        for _, col in ipairs(query._groupBy) do
+            local col_name = col
+            if type(col) == "table" and col._column then
+                col_name = col._column
+            end
+            group_parts[#group_parts + 1] = "`" .. col_name .. "`"
+        end
+        sql[#sql + 1] = "GROUP BY " .. table.concat(group_parts, ", ")
+    end
+
+    -- HAVING clause
+    if #query._having > 0 then
+        local having_parts = {}
+        for _, cond in ipairs(query._having) do
+            local sql_part, bind = cond:compile()
+            having_parts[#having_parts + 1] = sql_part
+            for _, b in ipairs(bind) do
+                bindings[#bindings + 1] = b
+            end
+        end
+        sql[#sql + 1] = "HAVING " .. table.concat(having_parts, " AND ")
+    end
+
+    -- ORDER BY clause
+    if #query._orderBy > 0 then
+        local order_parts = {}
+        for _, o in ipairs(query._orderBy) do
+            order_parts[#order_parts + 1] = "`" .. o.column .. "` " .. o.dir
+        end
+        sql[#sql + 1] = "ORDER BY " .. table.concat(order_parts, ", ")
+    end
+
+    -- LIMIT clause
+    if query._limit then
+        sql[#sql + 1] = "LIMIT " .. tostring(query._limit)
+    end
+
+    -- OFFSET clause
+    if query._offset then
+        sql[#sql + 1] = "OFFSET " .. tostring(query._offset)
+    end
+
+    return table.concat(sql, " "), bindings
+end
+
+function MySQL:generateInsert(table_name, data, entity)
+    local columns = {}
+    local placeholders = {}
+    local bindings = {}
+
+    for key, value in pairs(data) do
+        columns[#columns + 1] = "`" .. key .. "`"
+        placeholders[#placeholders + 1] = "?"
+        bindings[#bindings + 1] = value
+    end
+
+    local sql = string.format(
+        "INSERT INTO `%s` (%s) VALUES (%s)",
+        table_name,
+        table.concat(columns, ", "),
+        table.concat(placeholders, ", ")
+    )
+
+    return sql, bindings
+end
+
+function MySQL:generateUpdate(table_name, data, where)
+    local set_parts = {}
+    local bindings = {}
+
+    for key, value in pairs(data) do
+        set_parts[#set_parts + 1] = "`" .. key .. "` = ?"
+        bindings[#bindings + 1] = value
+    end
+
+    local where_sql, where_bindings = where:compile()
+    for _, b in ipairs(where_bindings) do
+        bindings[#bindings + 1] = b
+    end
+
+    local sql = string.format(
+        "UPDATE `%s` SET %s WHERE %s",
+        table_name,
+        table.concat(set_parts, ", "),
+        where_sql
+    )
+
+    return sql, bindings
+end
+
+function MySQL:generateDelete(table_name, where)
+    local where_sql, bindings = where:compile()
+
+    local sql = string.format(
+        "DELETE FROM `%s` WHERE %s",
+        table_name,
+        where_sql
+    )
+
+    return sql, bindings
+end
+
+function MySQL:getLastInsertId()
+    self:_ensureConnected()
+    local res, err = self._conn:execute("SELECT LAST_INSERT_ID() as id")
+    if not res then
+        error("Failed to get last insert id: " .. tostring(err))
+    end
+    local row = res:fetch({}, "a")
+    return row and row.id
+end
+
+return MySQL

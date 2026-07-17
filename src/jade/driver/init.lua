@@ -13,6 +13,7 @@ local function get(name)
 end
 
 register("postgresql", require("jade.driver.postgresql"))
+register("mysql", require("jade.driver.mysql"))
 
 return {
     register = register,

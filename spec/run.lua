@@ -151,6 +151,7 @@ local test_files = {
     "entity/soft_delete_spec.lua",
     "query/builder_spec.lua",
     "driver/postgresql_spec.lua",
+    "driver/mysql_spec.lua",
     "migration/tracker_spec.lua",
     "migration/diff_spec.lua",
     "migration/generator_spec.lua",
