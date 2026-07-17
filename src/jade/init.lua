@@ -39,6 +39,9 @@ Jade.security = require("jade.security")
 -- Schema (DDL operations)
 Jade.Schema = require("jade.schema")
 
+-- Declarative Schema
+Jade.Declarative = require("jade.schema.declarative")
+
 -- Driver registry
 Jade.drivers = require("jade.driver")
 
