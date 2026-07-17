@@ -43,6 +43,7 @@ build = {
         ["jade.types.decimal"] = "src/jade/types/decimal.lua",
         ["jade.types.uuid"] = "src/jade/types/uuid.lua",
         ["jade.types.date"] = "src/jade/types/date.lua",
+        ["jade.types.luals"] = "src/jade/types/luals.lua",
         ["jade.entity"] = "src/jade/entity/init.lua",
         ["jade.entity.instance"] = "src/jade/entity/instance.lua",
         ["jade.entity.relations"] = "src/jade/entity/relations.lua",
