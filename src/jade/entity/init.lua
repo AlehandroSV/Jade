@@ -40,10 +40,14 @@ function Entity.new(table_name, columns, options)
         _scopes = {},
     }, Entity)
 
-    -- Register column names
+    -- Register column names and encrypted markers
+    local Encryption = require("jade.encryption")
     for name, col in pairs(columns) do
         col._name = name
         col._table = table_name
+        if col._encrypted then
+            Encryption.markColumn(table_name, name)
+        end
     end
 
     -- Setup validations and callbacks
@@ -263,9 +267,17 @@ function Entity:create(data)
         Callbacks.run(self, "before_save", nil, data)
         Callbacks.run(self, "before_create", nil, data)
 
-        local sql, bindings = self._driver:generateInsert(self._table, data, self)
+        -- Encrypt fields before insert
+        local Encryption = require("jade.encryption")
+        local enc_data = Encryption.encryptFields(self._table, data, self._columns)
+
+        local sql, bindings = self._driver:generateInsert(self._table, enc_data, self)
         local result = self._driver:execute(sql, bindings)
         local row = result[1] or result
+
+        -- Decrypt fields after read
+        row = Encryption.decryptFields(self._table, row, self._columns)
+
         local instance = Instance.new(self, row)
 
         Callbacks.run(self, "after_create", instance, data)
@@ -292,9 +304,18 @@ function Entity:update(id, data)
 
         local Condition = require("jade.query.condition")
         local where = Condition.new("id", "=", id, self._table)
-        local sql, bindings = self._driver:generateUpdate(self._table, data, where)
+
+        -- Encrypt fields before update
+        local Encryption = require("jade.encryption")
+        local enc_data = Encryption.encryptFields(self._table, data, self._columns)
+
+        local sql, bindings = self._driver:generateUpdate(self._table, enc_data, where)
         local result = self._driver:execute(sql, bindings)
         local row = result[1] or result
+
+        -- Decrypt fields after read
+        row = Encryption.decryptFields(self._table, row, self._columns)
+
         local instance = Instance.new(self, row)
 
         Callbacks.run(self, "after_update", instance, data)
