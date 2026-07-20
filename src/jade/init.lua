@@ -39,6 +39,9 @@ Jade.security = require("jade.security")
 -- Audit
 Jade.Audit = require("jade.audit")
 
+-- Encryption
+Jade.Encryption = require("jade.encryption")
+
 -- Schema (DDL operations)
 Jade.Schema = require("jade.schema")
 

@@ -128,7 +128,11 @@ function Query:get()
     local driver = self._entity._driver
     local raw = driver:execute(sql, bindings)
     local instances = {}
+
+    -- Decrypt encrypted fields
+    local Encryption = require("jade.encryption")
     for i, row in ipairs(raw) do
+        row = Encryption.decryptFields(self._entity._table, row, self._entity._columns)
         instances[i] = Instance.new(self._entity, row)
     end
 

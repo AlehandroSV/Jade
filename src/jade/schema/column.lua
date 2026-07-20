@@ -69,4 +69,9 @@ function Column:clone()
     return copy
 end
 
+function Column:encrypted()
+    self._encrypted = true
+    return self
+end
+
 return Column
