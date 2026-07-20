@@ -123,4 +123,43 @@ function M.getReplicas(primary_name)
     return replicas[primary_name] or {}
 end
 
+-- Run a function in a transaction on a specific database
+-- jade.database.transaction("primary", function(driver)
+--     User:create({ name = "John" })
+-- end)
+function M.transaction(name, fn)
+    local driver = M.connect(name)
+    driver:beginTransaction()
+    local ok, err = pcall(fn, driver)
+    if ok then
+        driver:commitTransaction()
+    else
+        driver:rollbackTransaction()
+        error(err)
+    end
+    return ok
+end
+
+-- Execute a query on a specific database
+-- jade.database.execute("analytics", "SELECT * FROM logs")
+function M.execute(name, sql, bindings)
+    local driver = M.connect(name)
+    return driver:execute(sql, bindings)
+end
+
+-- Check health of all registered connections
+function M.healthCheck()
+    local results = {}
+    for name in pairs(connections) do
+        local ok, driver = pcall(M.connect, name)
+        if ok then
+            pcall(function() driver:disconnect() end)
+            results[name] = { status = "healthy" }
+        else
+            results[name] = { status = "unhealthy", error = tostring(driver) }
+        end
+    end
+    return results
+end
+
 return M
