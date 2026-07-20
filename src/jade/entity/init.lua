@@ -35,6 +35,7 @@ function Entity.new(table_name, columns)
         _driver = nil,
         _validations = {},
         _callbacks = {},
+        _scopes = {},
     }, Entity)
 
     -- Register column names
@@ -52,6 +53,23 @@ end
 
 function Entity:configure(driver)
     self._driver = driver
+end
+
+function Entity:scope(name, ...)
+    local args = { ... }
+    if #args > 0 and type(args[1]) == "function" then
+        -- Define scope
+        self._scopes[name] = args[1]
+        return self
+    else
+        -- Invoke scope
+        local scope_fn = self._scopes[name]
+        if scope_fn then
+            local q = Query.new(self)
+            return scope_fn(q, unpack(args))
+        end
+        return Query.new(self)
+    end
 end
 
 -- Relation definitions
