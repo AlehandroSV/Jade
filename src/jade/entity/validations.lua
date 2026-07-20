@@ -1,15 +1,35 @@
 local Validations = {}
 
+-- Normalize the `on` option to a set of actions
+local function normalizeOn(on)
+    if on == nil then
+        return { create = true, update = true }
+    end
+    if type(on) == "string" then
+        on = { on }
+    end
+    local set = {}
+    for _, action in ipairs(on) do
+        set[action] = true
+    end
+    -- "save" expands to both
+    if set.save then
+        set.create = true
+        set.update = true
+    end
+    return set
+end
+
 function Validations.setup(entity)
     entity._validations = {}
 
     -- Add validation methods to entity
-    function entity:validate(data)
-        return Validations.validate(self, data)
+    function entity:validate(data, action)
+        return Validations.validate(self, data, action)
     end
 
-    function entity:validatePresenceOf(column)
-        Validations.presenceOf(self, column)
+    function entity:validatePresenceOf(column, options)
+        Validations.presenceOf(self, column, options)
     end
 
     function entity:validateUniquenessOf(column, options)
@@ -39,10 +59,12 @@ function Validations.setup(entity)
     return entity
 end
 
-function Validations.presenceOf(entity, column)
+function Validations.presenceOf(entity, column, options)
+    options = options or {}
     table.insert(entity._validations, {
         type = "presence",
         column = column,
+        on = normalizeOn(options.on),
     })
 end
 
@@ -53,6 +75,7 @@ function Validations.uniquenessOf(entity, column, options)
         column = column,
         scope = options.scope,
         message = options.message,
+        on = normalizeOn(options.on),
     })
 end
 
@@ -65,6 +88,7 @@ function Validations.lengthOf(entity, column, options)
         max = options.max,
         is = options.is,
         message = options.message,
+        on = normalizeOn(options.on),
     })
 end
 
@@ -75,6 +99,7 @@ function Validations.formatOf(entity, column, options)
         column = column,
         pattern = options.pattern,
         message = options.message,
+        on = normalizeOn(options.on),
     })
 end
 
@@ -85,6 +110,7 @@ function Validations.inclusionOf(entity, column, options)
         column = column,
         values = options.values,
         message = options.message,
+        on = normalizeOn(options.on),
     })
 end
 
@@ -95,6 +121,7 @@ function Validations.numericalityOf(entity, column, options)
         column = column,
         integer_only = options.integer_only,
         message = options.message,
+        on = normalizeOn(options.on),
     })
 end
 
@@ -104,16 +131,19 @@ function Validations.custom(entity, column, fn, message)
         column = column,
         fn = fn,
         message = message or "is invalid",
+        on = normalizeOn(nil),
     })
 end
 
-function Validations.validate(entity, data)
+function Validations.validate(entity, data, action)
     local errors = {}
     local Expression = require("jade.query.expression")
     local Condition = require("jade.query.condition")
     local Query = require("jade.query")
 
     for _, validation in ipairs(entity._validations) do
+        -- Skip validation if action doesn't match scope
+        if not (action and validation.on and not validation.on[action]) then
         local value = data[validation.column]
         local valid = true
         local message = nil
@@ -227,6 +257,7 @@ function Validations.validate(entity, data)
         if not valid then
             errors[#errors + 1] = message
         end
+        end -- end scope check
     end
 
     if #errors > 0 then
