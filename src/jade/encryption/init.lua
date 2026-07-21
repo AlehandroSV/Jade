@@ -3,12 +3,12 @@ local M = {}
 -- Encryption configuration
 local enc_config = {
     key = nil,
-    algorithm = "aes",  -- "aes" for database-native encryption
+    algorithm = "aes",  -- "aes" for database-native, "custom" for user-provided functions
     database_encrypted = false,
     fields = {},
-    -- PostgreSQL: requires pgcrypto extension
-    -- MySQL: uses AES_ENCRYPT/AES_DECRYPT
-    -- SQLite: NOT supported (use SQLCipher or external encryption)
+    -- Custom encryption functions (used when algorithm = "custom")
+    encrypt_fn = nil,   -- function(value, key) -> encrypted_value
+    decrypt_fn = nil,   -- function(encrypted_value, key) -> value
 }
 
 -- Column-level encryption markers
@@ -20,6 +20,8 @@ function M.configure(opts)
     if opts.algorithm then enc_config.algorithm = opts.algorithm end
     if opts.database_encrypted ~= nil then enc_config.database_encrypted = opts.database_encrypted end
     if opts.fields then enc_config.fields = opts.fields end
+    if opts.encrypt_fn then enc_config.encrypt_fn = opts.encrypt_fn end
+    if opts.decrypt_fn then enc_config.decrypt_fn = opts.decrypt_fn end
 end
 
 -- Get config
@@ -89,12 +91,41 @@ function M.isEnabled()
     return enc_config.key ~= nil and enc_config.key ~= ""
 end
 
+-- Check if using custom encryption (Lua-level)
+function M.isCustom()
+    return enc_config.algorithm == "custom" and enc_config.encrypt_fn and enc_config.decrypt_fn
+end
+
+-- Check if using database-native encryption
+function M.isNative()
+    return enc_config.algorithm == "aes" and M.isEnabled()
+end
+
+--- Encrypt a value using custom function
+--- @param value any The value to encrypt
+--- @return any The encrypted value (or original if no custom function)
+function M.encryptValue(value)
+    if value == nil then return nil end
+    if not M.isCustom() then return value end
+    return enc_config.encrypt_fn(value, enc_config.key)
+end
+
+--- Decrypt a value using custom function
+--- @param value any The value to decrypt
+--- @return any The decrypted value (or original if no custom function)
+function M.decryptValue(value)
+    if value == nil then return nil end
+    if not M.isCustom() then return value end
+    return enc_config.decrypt_fn(value, enc_config.key)
+end
+
 --- Wrap a column reference with encryption function for INSERT/UPDATE
+--- Only used for native (database-level) encryption
 --- @param column_ref string The quoted column reference (e.g., '"email"')
 --- @param driver table The database driver
 --- @return string SQL fragment with encryption
 function M.wrapEncrypt(column_ref, driver)
-    if not M.isEnabled() then
+    if not M.isEnabled() or M.isCustom() then
         return column_ref
     end
 
@@ -102,25 +133,22 @@ function M.wrapEncrypt(column_ref, driver)
     local driver_type = driver._driver_type or "postgresql"
 
     if driver_type == "postgresql" then
-        -- PostgreSQL: pgcrypto extension required
-        -- CREATE EXTENSION IF NOT EXISTS pgcrypto;
         return string.format("pgp_sym_encrypt(%s::text, '%s')", column_ref, key:gsub("'", "''"))
     elseif driver_type == "mysql" then
-        -- MySQL: native AES_ENCRYPT
         return string.format("AES_ENCRYPT(%s, '%s')", column_ref, key:gsub("'", "''"))
     else
-        -- SQLite and others: no native encryption support
         error("Database encryption is not supported for " .. driver_type .. ". Use PostgreSQL with pgcrypto or MySQL.")
     end
 end
 
 --- Wrap a column reference with decryption function for SELECT
+--- Only used for native (database-level) encryption
 --- @param column_ref string The quoted column reference (e.g., '"email"')
 --- @param driver table The database driver
 --- @param as_name string Optional alias for the decrypted column
 --- @return string SQL fragment with decryption
 function M.wrapDecrypt(column_ref, driver, as_name)
-    if not M.isEnabled() then
+    if not M.isEnabled() or M.isCustom() then
         return column_ref
     end
 
@@ -129,10 +157,8 @@ function M.wrapDecrypt(column_ref, driver, as_name)
     local alias = as_name and (" AS " .. as_name) or ""
 
     if driver_type == "postgresql" then
-        -- PostgreSQL: pgcrypto extension required
         return string.format("pgp_sym_decrypt(%s, '%s')%s", column_ref, key:gsub("'", "''"), alias)
     elseif driver_type == "mysql" then
-        -- MySQL: native AES_DECRYPT (returns binary, need CAST)
         return string.format("CAST(AES_DECRYPT(%s, '%s') AS CHAR)%s", column_ref, key:gsub("'", "''"), alias)
     else
         error("Database decryption is not supported for " .. driver_type .. ". Use PostgreSQL with pgcrypto or MySQL.")
@@ -146,19 +172,17 @@ end
 --- @param driver table The database driver
 --- @return string, table The resolved SQL fragment and any bindings
 function M.resolveSelectItem(item, entity_name, columns, driver)
-    if not M.isEnabled() then
-        return nil, nil  -- No encryption, use default handling
+    if not M.isEnabled() or M.isCustom() then
+        return nil, nil  -- No native encryption, use default handling
     end
 
     if type(item) == "string" then
-        -- Check if this column is encrypted
         if M.isEncrypted(entity_name, item) then
             local Quoting = require("jade.util.quoting")
             local col_ref = Quoting.quoteIdentifier(item)
             return M.wrapDecrypt(col_ref, driver, Quoting.quoteIdentifier(item)), {}
         end
     elseif type(item) == "table" and item._column then
-        -- Expression with column reference
         if M.isEncrypted(entity_name, item._column) then
             local Quoting = require("jade.util.quoting")
             local col_ref = Quoting.quoteIdentifier(item._column)
@@ -167,15 +191,17 @@ function M.resolveSelectItem(item, entity_name, columns, driver)
         end
     end
 
-    return nil, nil  -- Not encrypted, use default handling
+    return nil, nil
 end
 
---- Prepare data for INSERT by wrapping encrypted columns
+--- Prepare data for INSERT
+--- For native encryption: marks columns for SQL-level encryption
+--- For custom encryption: encrypts values in Lua before passing to driver
 --- @param data table The input data
 --- @param entity_name string The entity/table name
 --- @param columns table The entity columns
 --- @param driver table The database driver
---- @return table, table Modified data with encryption markers, and bindings
+--- @return table, table Modified data and encryption markers
 function M.prepareInsert(data, entity_name, columns, driver)
     if not M.isEnabled() then
         return data, {}
@@ -183,14 +209,18 @@ function M.prepareInsert(data, entity_name, columns, driver)
 
     local fields = M.getEncryptedFields(entity_name, columns)
     local result = {}
-    local bindings = {}
     local encrypt_cols = {}
 
     for k, v in pairs(data) do
         if fields[k] then
-            -- Mark this column for encryption in SQL generation
-            encrypt_cols[k] = true
-            result[k] = v  -- Keep the raw value, driver will wrap with encryption
+            if M.isCustom() then
+                -- Custom encryption: encrypt in Lua
+                result[k] = M.encryptValue(v)
+            else
+                -- Native encryption: mark for SQL-level encryption
+                encrypt_cols[k] = true
+                result[k] = v
+            end
         else
             result[k] = v
         end
@@ -199,14 +229,40 @@ function M.prepareInsert(data, entity_name, columns, driver)
     return result, encrypt_cols
 end
 
---- Prepare data for UPDATE by wrapping encrypted columns
+--- Prepare data for UPDATE
+--- For custom encryption: encrypts values in Lua before passing to driver
 --- @param data table The input data
 --- @param entity_name string The entity/table name
 --- @param columns table The entity columns
 --- @param driver table The database driver
---- @return table, table Modified data with encryption markers, and bindings
+--- @return table, table Modified data and encryption markers
 function M.prepareUpdate(data, entity_name, columns, driver)
-    return M.prepareInsert(data, entity_name, columns, driver)  -- Same logic
+    return M.prepareInsert(data, entity_name, columns, driver)
+end
+
+--- Decrypt data fields after SELECT (only for custom encryption)
+--- For native encryption, decryption is handled at SQL level by the driver
+--- @param entity_name string The entity/table name
+--- @param data table The row data from database
+--- @param columns table The entity columns
+--- @return table The decrypted row data
+function M.decryptFields(entity_name, data, columns)
+    if not M.isEnabled() or not M.isCustom() then
+        return data  -- Native encryption handles decryption at SQL level
+    end
+
+    local fields = M.getEncryptedFields(entity_name, columns)
+    local result = {}
+
+    for k, v in pairs(data) do
+        if fields[k] then
+            result[k] = M.decryptValue(v)
+        else
+            result[k] = v
+        end
+    end
+
+    return result
 end
 
 -- Clear config (for testing)
@@ -216,6 +272,8 @@ function M.clear()
         algorithm = "aes",
         database_encrypted = false,
         fields = {},
+        encrypt_fn = nil,
+        decrypt_fn = nil,
     }
     encrypted_columns = {}
 end
