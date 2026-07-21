@@ -166,8 +166,15 @@ function Query:get()
     local raw = driver:execute(sql, bindings)
     local instances = {}
 
-    -- Create instances (decryption is now handled at SQL level by the driver)
+    -- Handle custom encryption decryption at Lua level
+    local Encryption = require("jade.encryption")
+    local is_custom = Encryption.isEnabled() and Encryption.isCustom()
+
     for i, row in ipairs(raw) do
+        -- Decrypt custom-encrypted fields
+        if is_custom then
+            row = Encryption.decryptFields(self._entity._table, row, self._entity._columns)
+        end
         instances[i] = Instance.new(self._entity, row)
     end
 
