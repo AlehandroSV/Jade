@@ -5,6 +5,7 @@ local Relations = require("jade.entity.relations")
 local Validations = require("jade.entity.validations")
 local Callbacks = require("jade.entity.callbacks")
 local Events = require("jade.entity.events")
+local Security = require("jade.security")
 
 local Entity = {}
 Entity.__index = function(self, key)
@@ -256,6 +257,9 @@ end
 
 -- CRUD with validation and callbacks
 function Entity:create(data)
+    -- Validate input data for SQL injection and type safety
+    Security.validateInput(data, self._columns)
+
     -- Run validations
     local errors = self:validate(data)
     if errors then
@@ -267,16 +271,17 @@ function Entity:create(data)
         Callbacks.run(self, "before_save", nil, data)
         Callbacks.run(self, "before_create", nil, data)
 
-        -- Encrypt fields before insert
+        -- Prepare data with encryption markers
         local Encryption = require("jade.encryption")
-        local enc_data = Encryption.encryptFields(self._table, data, self._columns)
+        local enc_data, encrypt_cols = Encryption.prepareInsert(data, self._table, self._columns, self._driver)
+        self._encrypt_cols = encrypt_cols
 
         local sql, bindings = self._driver:generateInsert(self._table, enc_data, self)
         local result = self._driver:execute(sql, bindings)
         local row = result[1] or result
 
-        -- Decrypt fields after read
-        row = Encryption.decryptFields(self._table, row, self._columns)
+        -- Clear encryption markers
+        self._encrypt_cols = nil
 
         local instance = Instance.new(self, row)
 
@@ -293,6 +298,9 @@ function Entity:create(data)
 end
 
 function Entity:update(id, data)
+    -- Validate input data for SQL injection and type safety
+    Security.validateInput(data, self._columns)
+
     -- Copy data to avoid mutating caller's table
     local update_data = {}
     for k, v in pairs(data) do update_data[k] = v end
@@ -312,16 +320,17 @@ function Entity:update(id, data)
         local Condition = require("jade.query.condition")
         local where = Condition.new("id", "=", id, self._table)
 
-        -- Encrypt fields before update
+        -- Prepare data with encryption markers
         local Encryption = require("jade.encryption")
-        local enc_data = Encryption.encryptFields(self._table, update_data, self._columns)
+        local enc_data, encrypt_cols = Encryption.prepareUpdate(update_data, self._table, self._columns, self._driver)
+        self._encrypt_cols = encrypt_cols
 
         local sql, bindings = self._driver:generateUpdate(self._table, enc_data, where)
         local result = self._driver:execute(sql, bindings)
         local row = result[1] or result
 
-        -- Decrypt fields after read
-        row = Encryption.decryptFields(self._table, row, self._columns)
+        -- Clear encryption markers
+        self._encrypt_cols = nil
 
         local instance = Instance.new(self, row)
 

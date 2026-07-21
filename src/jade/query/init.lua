@@ -2,6 +2,7 @@ local Expression = require("jade.query.expression")
 local Condition = require("jade.query.condition")
 local Instance = require("jade.entity.instance")
 local Quoting = require("jade.util.quoting")
+local Security = require("jade.security")
 
 local Query = {}
 Query.__index = Query
@@ -30,6 +31,16 @@ function Query:where(condition)
     if type(condition) == "table" and condition._raw and not condition.compile then
         local raw_sql = condition._raw
         local raw_bindings = condition._bindings or {}
+
+        -- Validate raw SQL for dangerous patterns
+        if type(raw_sql) ~= "string" then
+            error("Raw condition SQL must be a string")
+        end
+        local upper = raw_sql:upper()
+        if upper:match("UNION%s+ALL%s+SELECT") or upper:match("UNION%s+SELECT") then
+            error("Raw WHERE condition does not allow UNION SELECT")
+        end
+
         condition = {
             _raw = raw_sql,
             _bindings = raw_bindings,
@@ -54,16 +65,21 @@ function Query:orderBy(column, direction)
         col_name = column._column
     end
 
+    -- Validate column name and direction
+    Security.validateOrderBy(col_name, dir)
+
     self._orderBy[#self._orderBy + 1] = { column = col_name, dir = dir }
     return self
 end
 
 function Query:limit(n)
+    Security.validateLimit(n)
     self._limit = n
     return self
 end
 
 function Query:offset(n)
+    Security.validateOffset(n)
     self._offset = n
     return self
 end
@@ -74,6 +90,7 @@ function Query:select(...)
         cols = cols[1]
     end
     for _, col in ipairs(cols) do
+        Security.validateSelectItem(col)
         self._select[#self._select + 1] = col
     end
     return self
@@ -90,21 +107,25 @@ function Query:distinct()
 end
 
 function Query:join(table_name, on_condition)
+    Security.validateJoinTableName(table_name)
     self._joins[#self._joins + 1] = { type = "INNER", table = table_name, on = on_condition }
     return self
 end
 
 function Query:leftJoin(table_name, on_condition)
+    Security.validateJoinTableName(table_name)
     self._joins[#self._joins + 1] = { type = "LEFT", table = table_name, on = on_condition }
     return self
 end
 
 function Query:rightJoin(table_name, on_condition)
+    Security.validateJoinTableName(table_name)
     self._joins[#self._joins + 1] = { type = "RIGHT", table = table_name, on = on_condition }
     return self
 end
 
 function Query:innerJoin(table_name, on_condition)
+    Security.validateJoinTableName(table_name)
     self._joins[#self._joins + 1] = { type = "INNER", table = table_name, on = on_condition }
     return self
 end
@@ -145,10 +166,8 @@ function Query:get()
     local raw = driver:execute(sql, bindings)
     local instances = {}
 
-    -- Decrypt encrypted fields
-    local Encryption = require("jade.encryption")
+    -- Create instances (decryption is now handled at SQL level by the driver)
     for i, row in ipairs(raw) do
-        row = Encryption.decryptFields(self._entity._table, row, self._entity._columns)
         instances[i] = Instance.new(self._entity, row)
     end
 
@@ -624,7 +643,9 @@ end
 
 function Query:toSQL()
     local driver = self._entity._driver
-    return driver:generateSelect(self)
+    local sql, bindings = driver:generateSelect(self)
+    Security.validateQuery(sql, bindings)
+    return sql, bindings
 end
 
 return Query

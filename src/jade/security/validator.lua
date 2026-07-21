@@ -106,4 +106,102 @@ function M.validatePagination(page, per_page)
     return true
 end
 
+-- Validate LIMIT value (must be a non-negative integer)
+function M.validateLimit(value)
+    if value == nil then return true end
+    if type(value) ~= "number" or value < 0 or value ~= math.floor(value) then
+        error("Invalid LIMIT value: " .. tostring(value))
+    end
+    return true
+end
+
+-- Validate OFFSET value (must be a non-negative integer)
+function M.validateOffset(value)
+    if value == nil then return true end
+    if type(value) ~= "number" or value < 0 or value ~= math.floor(value) then
+        error("Invalid OFFSET value: " .. tostring(value))
+    end
+    return true
+end
+
+-- Validate JOIN table name
+function M.validateJoinTableName(name)
+    if type(name) ~= "string" then
+        error("JOIN table name must be a string")
+    end
+    -- Allow alphanumeric and underscore, also dots for schema.table
+    if not name:match("^[%a_][%w_%.]*$") then
+        error("Invalid JOIN table name: " .. name)
+    end
+    if #name > 128 then
+        error("JOIN table name too long: " .. #name)
+    end
+    return true
+end
+
+-- Validate SELECT item (must be a string or table with _column/_query)
+function M.validateSelectItem(item)
+    if type(item) == "string" then
+        -- Allow SQL functions and expressions that are whitelisted
+        -- Block obviously dangerous patterns
+        local upper = item:upper()
+        if upper:match(";%s*") then
+            error("Invalid SELECT item: contains semicolon")
+        end
+        if upper:match("%-%-") then
+            error("Invalid SELECT item: contains comment")
+        end
+        if upper:match("/%*") then
+            error("Invalid SELECT item: contains block comment")
+        end
+        -- Allow common SQL functions
+        local allowed_patterns = {
+            "^%s*COUNT%s*%(",
+            "^%s*SUM%s*%(",
+            "^%s*AVG%s*%(",
+            "^%s*MIN%s*%(",
+            "^%s*MAX%s*%(",
+            "^%s*DISTINCT%s+",
+            "^[%w_%.]+$",  -- simple column name or table.column
+        }
+        for _, pattern in ipairs(allowed_patterns) do
+            if item:match(pattern) then
+                return true
+            end
+        end
+        -- If no pattern matched, reject
+        error("Invalid SELECT item: " .. item)
+    elseif type(item) == "table" then
+        -- Expression with alias or subquery — validated at compile time
+        return true
+    else
+        error("SELECT item must be a string or expression table")
+    end
+end
+
+-- Validate ORDER BY direction
+function M.validateOrderByDirection(direction)
+    local valid = { ASC = true, DESC = true, asc = true, desc = true, [""] = true }
+    if not valid[direction] then
+        error("Invalid ORDER BY direction: " .. tostring(direction))
+    end
+    return true
+end
+
+-- Validate ORDER BY column (prevent injection through column name)
+function M.validateOrderByColumn(column)
+    if type(column) ~= "string" then
+        -- Allow expression objects
+        if type(column) == "table" then
+            return true
+        end
+        error("ORDER BY column must be a string or expression")
+    end
+    -- Allow column names with dots for table.column
+    if not column:match("^[%a_][%w_%.]*$") then
+        error("Invalid ORDER BY column: " .. column)
+    end
+    return true
+end
+
 return M
