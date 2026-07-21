@@ -89,46 +89,61 @@ function Entity:scope(name, ...)
     end
 end
 
+-- Helper: derive relation key from entity
+local function entityRelKey(target)
+    local inflection = require("jade.util.inflection")
+    local singular = inflection.singularize(target._table)
+    return target._table, singular
+end
+
 -- Relation definitions
 function Entity:belongsTo(target_entity, options)
     local relation = Relations.belongsTo(target_entity, options)
-    local name = target_entity._table
-    self._relations[name] = relation
+    local tableName, entityName = entityRelKey(target_entity)
+    self._relations[tableName] = relation
+    if entityName ~= tableName then
+        self._relations[entityName] = relation
+    end
     return self
 end
 
 function Entity:hasOne(target_entity, options)
     local relation = Relations.hasOne(self, target_entity, options)
-    local name = target_entity._table
-    self._relations[name] = relation
+    local tableName, entityName = entityRelKey(target_entity)
+    self._relations[tableName] = relation
+    if entityName ~= tableName then self._relations[entityName] = relation end
     return self
 end
 
 function Entity:hasMany(target_entity, options)
     local relation = Relations.hasMany(self, target_entity, options)
-    local name = target_entity._table
-    self._relations[name] = relation
+    local tableName, entityName = entityRelKey(target_entity)
+    self._relations[tableName] = relation
+    if entityName ~= tableName then self._relations[entityName] = relation end
     return self
 end
 
 function Entity:foreignKey(target_entity, options)
     local relation = Relations.ForeignKey(target_entity, options)
-    local name = target_entity._table
-    self._relations[name] = relation
+    local tableName, entityName = entityRelKey(target_entity)
+    self._relations[tableName] = relation
+    if entityName ~= tableName then self._relations[entityName] = relation end
     return self
 end
 
 function Entity:hasAndBelongsToMany(target_entity, options)
     local relation = Relations.hasAndBelongsToMany(self, target_entity, options)
-    local name = target_entity._table
-    self._relations[name] = relation
+    local tableName, entityName = entityRelKey(target_entity)
+    self._relations[tableName] = relation
+    if entityName ~= tableName then self._relations[entityName] = relation end
     return self
 end
 
 function Entity:hasManyThrough(target_entity, through_entity, options)
     local relation = Relations.hasManyThrough(self, target_entity, through_entity, options)
-    local name = target_entity._table
-    self._relations[name] = relation
+    local tableName, entityName = entityRelKey(target_entity)
+    self._relations[tableName] = relation
+    if entityName ~= tableName then self._relations[entityName] = relation end
     return self
 end
 
