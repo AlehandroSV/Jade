@@ -38,8 +38,17 @@ function Instance:update(data)
     if result == nil then
         return nil
     end
+    -- Only copy column data (skip relation instructions)
     for k, v in pairs(data) do
-        self._data[k] = v
+        if self._entity._columns[k] then
+            self._data[k] = v
+        end
+    end
+    -- Refresh resolved FK values from result
+    if result._data then
+        for k, v in pairs(result._data) do
+            self._data[k] = v
+        end
     end
     return self
 end

@@ -334,25 +334,143 @@ function Entity:upsert(data, conflict_columns)
     return self._driver:execute(sql, bindings)
 end
 
+-- Separate data into column values and relation instructions
+function Entity:_separateData(data)
+    local columns_data = {}
+    local relations_data = {}
+    for key, value in pairs(data) do
+        if self._relations[key] then
+            relations_data[key] = value
+        elseif self._columns[key] then
+            columns_data[key] = value
+        end
+    end
+    return columns_data, relations_data
+end
+
+-- Resolve a single relation instruction, return the target record's id
+function Entity:_resolveRelation(relName, instruction)
+    local rel = self._relations[relName]
+    if not rel then error("Relation '" .. relName .. "' not defined") end
+    local target = rel.target
+
+    if instruction.connect then
+        -- { connect = { id = N } } or { connect = { email = "..." } }
+        local record = target:findUnique({ where = instruction.connect })
+        if not record then
+            error("Cannot connect: no " .. target._table .. " found with " .. require("dkjson").encode(instruction.connect))
+        end
+        return record._data.id
+
+    elseif instruction.create then
+        -- { create = { ... } }
+        local record = target:create(instruction.create)
+        return record._data.id
+
+    elseif instruction.connectOrCreate then
+        -- { connectOrCreate = { where = {...}, create = {...} } }
+        local record = target:findUnique({ where = instruction.connectOrCreate.where })
+        if not record then
+            record = target:create(instruction.connectOrCreate.create)
+        end
+        return record._data.id
+
+    elseif type(instruction.id) == "number" then
+        -- Shorthand: { id = N }
+        return instruction.id
+
+    else
+        error("Invalid relation instruction for '" .. relName .. "'. Use { connect = {...} }, { create = {...} }, or { connectOrCreate = {...} }")
+    end
+end
+
+-- Resolve hasMany/hasOne children after parent is created
+function Entity:_resolveChildren(relations_data, parentInstance)
+    for key, value in pairs(relations_data) do
+        local rel = self._relations[key]
+        if not rel then goto continue end
+
+        if rel.type == "hasMany" or rel.type == "hasOne" then
+            local target = rel.target
+            local items = {}
+
+            if value.create then
+                -- Single: { create = { ... } }
+                items = { value }
+            elseif #value > 0 then
+                -- Array: { { create = {...} }, { create = {...} } }
+                items = value
+            end
+
+            for _, item in ipairs(items) do
+                if item.create then
+                    local child_data = {}
+                    for k, v in pairs(item.create) do child_data[k] = v end
+                    child_data[rel.foreign_key] = parentInstance._data.id
+                    target:create(child_data)
+                elseif item.connect then
+                    -- Connect existing record (update its FK)
+                    local record = target:findUnique({ where = item.connect })
+                    if record then
+                        record:update({ [rel.foreign_key] = parentInstance._data.id })
+                    end
+                end
+            end
+
+        elseif rel.type == "hasAndBelongsToMany" then
+            local driver = self._driver
+            if value.connect then
+                local ids = {}
+                if value.connect.ids then
+                    ids = value.connect.ids
+                elseif value.connect.id then
+                    ids = { value.connect.id }
+                end
+                for _, target_id in ipairs(ids) do
+                    driver:execute(
+                        string.format("INSERT INTO %s (%s, %s) VALUES ($1, $2)",
+                            rel.join_table, rel.source_foreign_key, rel.target_foreign_key),
+                        { parentInstance._data.id, target_id }
+                    )
+                end
+            end
+        end
+
+        ::continue::
+    end
+end
+
 -- CRUD with validation and callbacks
 function Entity:create(data)
-    -- Validate input data for SQL injection and type safety
-    Security.validateInput(data, self._columns)
+    -- Separate columns from relations
+    local columns_data, relations_data = self:_separateData(data)
 
-    -- Run validations
-    local errors = self:validate(data)
+    -- Resolve belongsTo FIRST (need FK for main insert)
+    for key, value in pairs(relations_data) do
+        local rel = self._relations[key]
+        if rel and rel.type == "belongsTo" then
+            local fk_value = self:_resolveRelation(key, value)
+            columns_data[rel.foreign_key] = fk_value
+        end
+    end
+
+    -- Validate input data for SQL injection and type safety
+    Security.validateInput(columns_data, self._columns)
+
+    -- Run validations on columns only
+    local errors = self:validate(columns_data)
     if errors then
         error("Validation failed: " .. table.concat(errors, ", "))
     end
 
     -- Run around callbacks
-    local result = Callbacks.runAround(self, "around_save", nil, data, function()
-        Callbacks.run(self, "before_save", nil, data)
-        Callbacks.run(self, "before_create", nil, data)
+    local result = Callbacks.runAround(self, "around_save", nil, columns_data, function()
+        Callbacks.run(self, "before_save", nil, columns_data)
+        Callbacks.run(self, "before_create", nil, columns_data)
 
         -- Prepare data with encryption markers
         local Encryption = require("jade.encryption")
-        local enc_data, encrypt_cols = Encryption.prepareInsert(data, self._table, self._columns, self._driver)
+        local enc_data, encrypt_cols = Encryption.prepareInsert(columns_data, self._table, self._columns, self._driver)
         self._encrypt_cols = encrypt_cols
 
         local sql, bindings = self._driver:generateInsert(self._table, enc_data, self)
@@ -363,6 +481,9 @@ function Entity:create(data)
         self._encrypt_cols = nil
 
         local instance = Instance.new(self, row)
+
+        -- Resolve hasMany/hasOne/hasAndBelongsToMany AFTER parent is created
+        self:_resolveChildren(relations_data, instance)
 
         Callbacks.run(self, "after_create", instance, data)
         Callbacks.run(self, "after_save", instance, data)
@@ -394,12 +515,24 @@ function Entity:update(id_or_options, data)
         -- Update by ID (original behavior)
         local id = id_or_options
 
+        -- Separate columns from relations
+        local columns_data, relations_data = self:_separateData(data)
+
+        -- Resolve belongsTo FIRST
+        for key, value in pairs(relations_data) do
+            local rel = self._relations[key]
+            if rel and rel.type == "belongsTo" then
+                local fk_value = self:_resolveRelation(key, value)
+                columns_data[rel.foreign_key] = fk_value
+            end
+        end
+
         -- Validate input data for SQL injection and type safety
-        Security.validateInput(data, self._columns)
+        Security.validateInput(columns_data, self._columns)
 
         -- Copy data to avoid mutating caller's table
         local update_data = {}
-        for k, v in pairs(data) do update_data[k] = v end
+        for k, v in pairs(columns_data) do update_data[k] = v end
         update_data.id = id
 
         -- Run validations
@@ -429,6 +562,9 @@ function Entity:update(id_or_options, data)
             self._encrypt_cols = nil
 
             local instance = Instance.new(self, row)
+
+            -- Resolve hasMany/hasOne/hasAndBelongsToMany AFTER update
+            self:_resolveChildren(relations_data, instance)
 
             Callbacks.run(self, "after_update", instance, update_data)
             Callbacks.run(self, "after_save", instance, update_data)

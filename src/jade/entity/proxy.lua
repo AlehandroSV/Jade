@@ -76,4 +76,135 @@ function Proxy:getData()
     return self._data
 end
 
+-- Create a related record and link it
+function Proxy:create(data)
+    local relation = self._relation
+    local target = relation.target
+    local owner = self._owner
+
+    if relation.type == "belongsTo" then
+        -- Create target, set FK on owner
+        local record = target:create(data)
+        owner:update({ [relation.foreign_key] = record._data.id })
+        self._data = record
+        self._loaded = true
+        return record
+
+    elseif relation.type == "hasOne" then
+        -- Create target with FK pointing to owner
+        data[relation.foreign_key] = owner.id
+        local record = target:create(data)
+        self._data = record
+        self._loaded = true
+        return record
+
+    elseif relation.type == "hasMany" then
+        -- Create target with FK pointing to owner
+        data[relation.foreign_key] = owner.id
+        local record = target:create(data)
+        -- Invalidate cache so next load() picks it up
+        self._loaded = false
+        self._data = nil
+        return record
+
+    elseif relation.type == "hasAndBelongsToMany" then
+        -- Create target and insert into pivot table
+        local record = target:create(data)
+        local driver = owner._driver
+        driver:execute(
+            string.format("INSERT INTO %s (%s, %s) VALUES ($1, $2)",
+                relation.join_table, relation.source_foreign_key, relation.target_foreign_key),
+            { owner.id, record._data.id }
+        )
+        self._loaded = false
+        self._data = nil
+        return record
+    end
+end
+
+-- Connect an existing record
+function Proxy:connect(id_or_where)
+    local relation = self._relation
+    local target = relation.target
+    local owner = self._owner
+
+    local record
+    if type(id_or_where) == "number" then
+        record = target:find(id_or_where)
+    else
+        record = target:findUnique({ where = id_or_where })
+    end
+
+    if not record then
+        error("Cannot connect: record not found")
+    end
+
+    if relation.type == "belongsTo" then
+        owner:update({ [relation.foreign_key] = record._data.id })
+        self._data = record
+        self._loaded = true
+
+    elseif relation.type == "hasOne" or relation.type == "hasMany" then
+        record:update({ [relation.foreign_key] = owner.id })
+        self._loaded = false
+        self._data = nil
+
+    elseif relation.type == "hasAndBelongsToMany" then
+        local driver = owner._driver
+        driver:execute(
+            string.format("INSERT INTO %s (%s, %s) VALUES ($1, $2)",
+                relation.join_table, relation.source_foreign_key, relation.target_foreign_key),
+            { owner.id, record._data.id }
+        )
+        self._loaded = false
+        self._data = nil
+    end
+
+    return record
+end
+
+-- Disconnect a related record
+function Proxy:disconnect(id_or_where)
+    local relation = self._relation
+    local target = relation.target
+    local owner = self._owner
+
+    if relation.type == "belongsTo" then
+        owner:update({ [relation.foreign_key] = nil })
+        self._data = nil
+        self._loaded = true
+
+    elseif relation.type == "hasOne" or relation.type == "hasMany" then
+        local record
+        if type(id_or_where) == "number" then
+            record = target:find(id_or_where)
+        else
+            record = target:findUnique({ where = id_or_where })
+        end
+        if record then
+            record:update({ [relation.foreign_key] = nil })
+        end
+        self._loaded = false
+        self._data = nil
+
+    elseif relation.type == "hasAndBelongsToMany" then
+        local record
+        if type(id_or_where) == "number" then
+            record = target:find(id_or_where)
+        else
+            record = target:findUnique({ where = id_or_where })
+        end
+        if record then
+            local driver = owner._driver
+            driver:execute(
+                string.format("DELETE FROM %s WHERE %s = $1 AND %s = $2",
+                    relation.join_table, relation.source_foreign_key, relation.target_foreign_key),
+                { owner.id, record._data.id }
+            )
+        end
+        self._loaded = false
+        self._data = nil
+    end
+end
+
 return Proxy
