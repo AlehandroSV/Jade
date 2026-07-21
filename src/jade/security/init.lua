@@ -28,9 +28,11 @@ function M.init(options)
     end
 end
 
--- Validate input before query execution
-function M.validateInput(data, schema)
-    if not data or not schema then
+-- Validate input data for entity create/update
+-- data: the input data table
+-- columns: entity column definitions
+function M.validateInput(data, columns)
+    if not data or not columns then
         return true
     end
 
@@ -39,7 +41,7 @@ function M.validateInput(data, schema)
         M.validator.validateColumnName(key)
 
         -- Find column definition
-        local col_def = schema[key]
+        local col_def = columns[key]
         if col_def then
             -- Validate type
             if not M.sanitizer.validateType(value, col_def.type) then
@@ -64,20 +66,40 @@ function M.validateInput(data, schema)
     return true
 end
 
--- Safe query builder with security checks
-function M.safeQuery(query)
-    -- Validate query length
-    M.validator.validateQueryLength(query)
-
-    return query
+-- Validate a select item before adding to query
+function M.validateSelectItem(item)
+    return M.validator.validateSelectItem(item)
 end
 
--- Safe parameter binding
-function M.safeBindings(bindings)
-    -- Validate parameter count
-    M.validator.validateParameterCount(bindings)
+-- Validate a JOIN table name
+function M.validateJoinTableName(name)
+    return M.validator.validateJoinTableName(name)
+end
 
-    return bindings
+-- Validate ORDER BY column and direction
+function M.validateOrderBy(column, direction)
+    M.validator.validateOrderByColumn(column)
+    M.validator.validateOrderByDirection(direction)
+    return true
+end
+
+-- Validate LIMIT value
+function M.validateLimit(value)
+    return M.validator.validateLimit(value)
+end
+
+-- Validate OFFSET value
+function M.validateOffset(value)
+    return M.validator.validateOffset(value)
+end
+
+-- Validate query length and parameter count
+function M.validateQuery(sql, bindings)
+    M.validator.validateQueryLength(sql)
+    if bindings then
+        M.validator.validateParameterCount(bindings)
+    end
+    return true
 end
 
 return M
