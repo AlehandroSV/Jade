@@ -56,6 +56,9 @@ function Entity.new(table_name, columns, options)
     Validations.setup(model)
     Callbacks.setup(model)
 
+    -- Auto-generate convenience methods for each column
+    Entity._generateColumnMethods(model)
+
     -- Auto-connect to assigned database if available
     if model._database then
         local Database = require("jade.database")
@@ -66,6 +69,46 @@ function Entity.new(table_name, columns, options)
     end
 
     return model
+end
+
+-- Auto-generate convenience methods based on columns
+function Entity._generateColumnMethods(model)
+    for col_name, col in pairs(model._columns) do
+        -- Skip id column (already has find(id))
+        if col_name ~= "id" then
+            -- findBy{Column}(value) - find first by this column
+            local findName = "findBy" .. col_name:sub(1, 1):upper() .. col_name:sub(2)
+            model[findName] = function(self, value)
+                local Condition = require("jade.query.condition")
+                local cond = Condition.new(col_name, "=", value, self._table)
+                return Query.new(self):where(cond):first()
+            end
+
+            -- findAllBy{Column}(value) - find all by this column
+            local findAllName = "findAllBy" .. col_name:sub(1, 1):upper() .. col_name:sub(2)
+            model[findAllName] = function(self, value)
+                local Condition = require("jade.query.condition")
+                local cond = Condition.new(col_name, "=", value, self._table)
+                return Query.new(self):where(cond):get()
+            end
+
+            -- countBy{Column}(value) - count by this column
+            local countName = "countBy" .. col_name:sub(1, 1):upper() .. col_name:sub(2)
+            model[countName] = function(self, value)
+                local Condition = require("jade.query.condition")
+                local cond = Condition.new(col_name, "=", value, self._table)
+                return Query.new(self):where(cond):count()
+            end
+
+            -- existsBy{Column}(value) - check if exists by this column
+            local existsName = "existsBy" .. col_name:sub(1, 1):upper() .. col_name:sub(2)
+            model[existsName] = function(self, value)
+                local Condition = require("jade.query.condition")
+                local cond = Condition.new(col_name, "=", value, self._table)
+                return Query.new(self):where(cond):exists()
+            end
+        end
+    end
 end
 
 function Entity:configure(driver)
@@ -295,6 +338,117 @@ function Entity:create(data)
     end)
 
     return result
+end
+
+-- Get or create: find by conditions, or create if not found
+function Entity:getOrCreate(conditions, defaults)
+    defaults = defaults or {}
+    local Condition = require("jade.query.condition")
+
+    -- Build where condition from table
+    local where = nil
+    for k, v in pairs(conditions) do
+        local cond = Condition.new(k, "=", v, self._table)
+        if where then
+            where = where:band(cond)
+        else
+            where = cond
+        end
+    end
+
+    -- Try to find
+    local q = Query.new(self):where(where):first()
+    if q then
+        return q, false  -- found, not created
+    end
+
+    -- Create with merged data
+    local data = {}
+    for k, v in pairs(conditions) do data[k] = v end
+    for k, v in pairs(defaults) do data[k] = v end
+
+    return self:create(data), true  -- created
+end
+
+-- First or create: same as getOrCreate but clearer name
+function Entity:firstOrCreate(conditions, defaults)
+    return self:getOrCreate(conditions, defaults)
+end
+
+-- Update or create: update if exists, create if not
+function Entity:updateOrCreate(conditions, data)
+    local Condition = require("jade.query.condition")
+
+    -- Build where condition
+    local where = nil
+    for k, v in pairs(conditions) do
+        local cond = Condition.new(k, "=", v, self._table)
+        if where then
+            where = where:band(cond)
+        else
+            where = cond
+        end
+    end
+
+    -- Try to find
+    local existing = Query.new(self):where(where):first()
+    if existing then
+        -- Update
+        local updated = self:update(existing._data.id, data)
+        return updated, false  -- updated, not created
+    else
+        -- Create with merged data
+        local create_data = {}
+        for k, v in pairs(conditions) do create_data[k] = v end
+        for k, v in pairs(data) do create_data[k] = v end
+        return self:create(create_data), true  -- created
+    end
+end
+
+-- Delete by conditions
+function Entity:deleteWhere(conditions)
+    local Condition = require("jade.query.condition")
+
+    local where = nil
+    for k, v in pairs(conditions) do
+        local cond = Condition.new(k, "=", v, self._table)
+        if where then
+            where = where:band(cond)
+        else
+            where = cond
+        end
+    end
+
+    return Query.new(self):where(where):deleteAll()
+end
+
+-- Update by conditions
+function Entity:updateWhere(conditions, data)
+    local Condition = require("jade.query.condition")
+
+    local where = nil
+    for k, v in pairs(conditions) do
+        local cond = Condition.new(k, "=", v, self._table)
+        if where then
+            where = where:band(cond)
+        else
+            where = cond
+        end
+    end
+
+    return Query.new(self):where(where):updateAll(data)
+end
+
+-- Register entity with a database connection
+function Entity:register(driver)
+    self._driver = driver
+    return self
+end
+
+-- Set database name for multi-database support
+function Entity:database(db_name)
+    self._database = db_name
+    return self
 end
 
 function Entity:update(id, data)
