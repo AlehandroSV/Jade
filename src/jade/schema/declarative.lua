@@ -759,7 +759,7 @@ function Declarative.fieldToDeclarative(field_name, field)
     return string.format('%s = { %s }', field_name, table.concat(parts, ', '))
 end
 
--- Prisma-like schema parser
+-- declarative schema parser
 -- Parses a simplified schema definition string into a parsed schema table
 --
 -- Syntax:
@@ -772,7 +772,7 @@ end
 --     posts = hasMany(Post)
 --   }
 --
-function Declarative.parsePrismaSchema(schema_str)
+function Declarative.parsedeclarativeSchema(schema_str)
     local models = {}
     local current_model = nil
 
@@ -810,7 +810,7 @@ function Declarative.parsePrismaSchema(schema_str)
                     -- Field definition
                     local field_name, field_def = trimmed:match("^(%w+)%s*=%s*(.+)$")
                     if field_name and field_def then
-                        local field = Declarative._parsePrismaField(field_name, field_def)
+                        local field = Declarative._parsedeclarativeField(field_name, field_def)
                         if field.relation then
                             current_model.relations[field_name] = field.relation
                         else
@@ -837,8 +837,8 @@ function Declarative.parsePrismaSchema(schema_str)
     return models
 end
 
--- Parse a single Prisma field definition
-function Declarative._parsePrismaField(name, def)
+-- Parse a single declarative field definition
+function Declarative._parsedeclarativeField(name, def)
     local result = { name = name }
 
     -- Check for modifiers
