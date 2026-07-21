@@ -4,6 +4,7 @@ local Quoting = require("jade.util.quoting")
 
 local MySQL = {}
 MySQL.__index = MySQL
+MySQL._driver_type = "mysql"
 
 setmetatable(MySQL, {
     __index = Driver,
@@ -218,6 +219,10 @@ function MySQL:generateSelect(query)
     local sql = {}
     local bindings = {}
 
+    local Encryption = require("jade.encryption")
+    local entity_name = query._entity._table
+    local columns = query._entity._columns
+
     -- SELECT clause with DISTINCT
     local select_prefix = "SELECT"
     if query._distinct then
@@ -237,7 +242,35 @@ function MySQL:generateSelect(query)
         end
         sql[#sql + 1] = select_prefix .. " " .. table.concat(resolved, ", ")
     else
-        sql[#sql + 1] = select_prefix .. " *"
+        -- SELECT * with decryption for encrypted columns
+        if Encryption.isEnabled() then
+            local fields = Encryption.getEncryptedFields(entity_name, columns)
+            local has_encrypted = false
+            for _ in pairs(fields) do has_encrypted = true; break end
+
+            if has_encrypted then
+                -- Build explicit column list with decryption
+                local select_parts = {}
+                for col_name, _ in pairs(columns) do
+                    local col_ref = self:quoteIdentifier(col_name)
+                    if fields[col_name] then
+                        -- Encrypted column: wrap with AES_DECRYPT
+                        local key = Encryption.getKey()
+                        select_parts[#select_parts + 1] = string.format(
+                            "CAST(AES_DECRYPT(%s, '%s') AS CHAR) AS %s",
+                            col_ref, key:gsub("'", "''"), col_ref
+                        )
+                    else
+                        select_parts[#select_parts + 1] = col_ref
+                    end
+                end
+                sql[#sql + 1] = select_prefix .. " " .. table.concat(select_parts, ", ")
+            else
+                sql[#sql + 1] = select_prefix .. " *"
+            end
+        else
+            sql[#sql + 1] = select_prefix .. " *"
+        end
     end
 
     -- FROM clause
@@ -321,9 +354,17 @@ function MySQL:generateInsert(table_name, data, entity)
     local placeholders = {}
     local bindings = {}
 
+    local Encryption = require("jade.encryption")
+    local encrypt_cols = entity and entity._encrypt_cols or {}
+
     for key, value in pairs(data) do
         columns[#columns + 1] = self:quoteIdentifier(key)
-        placeholders[#placeholders + 1] = "?"
+        if encrypt_cols[key] and Encryption.isEnabled() then
+            -- Use MySQL AES_ENCRYPT
+            placeholders[#placeholders + 1] = "AES_ENCRYPT(?, '" .. Encryption.getKey():gsub("'", "''") .. "')"
+        else
+            placeholders[#placeholders + 1] = "?"
+        end
         bindings[#bindings + 1] = value
     end
 
@@ -457,8 +498,15 @@ function MySQL:generateUpdate(table_name, data, where)
     local set_parts = {}
     local bindings = {}
 
+    local Encryption = require("jade.encryption")
+    local encrypt_cols = {}
+
     for key, value in pairs(data) do
-        set_parts[#set_parts + 1] = self:quoteIdentifier(key) .. " = ?"
+        if encrypt_cols[key] and Encryption.isEnabled() then
+            set_parts[#set_parts + 1] = self:quoteIdentifier(key) .. " = AES_ENCRYPT(?, '" .. Encryption.getKey():gsub("'", "''") .. "')"
+        else
+            set_parts[#set_parts + 1] = self:quoteIdentifier(key) .. " = ?"
+        end
         bindings[#bindings + 1] = value
     end
 
