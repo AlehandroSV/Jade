@@ -5,6 +5,7 @@ local Quoting = require("jade.util.quoting")
 
 local PostgreSQL = {}
 PostgreSQL.__index = PostgreSQL
+PostgreSQL._driver_type = "postgresql"
 
 setmetatable(PostgreSQL, {
     __index = Driver,
@@ -177,6 +178,10 @@ function PostgreSQL:generateSelect(query)
     local sql = {}
     local bindings = {}
 
+    local Encryption = require("jade.encryption")
+    local entity_name = query._entity._table
+    local columns = query._entity._columns
+
     -- SELECT clause with DISTINCT
     local select_prefix = "SELECT"
     if query._distinct then
@@ -194,7 +199,35 @@ function PostgreSQL:generateSelect(query)
         end
         sql[#sql + 1] = select_prefix .. " " .. table.concat(resolved, ", ")
     else
-        sql[#sql + 1] = select_prefix .. " *"
+        -- SELECT * with decryption for encrypted columns
+        if Encryption.isEnabled() then
+            local fields = Encryption.getEncryptedFields(entity_name, columns)
+            local has_encrypted = false
+            for _ in pairs(fields) do has_encrypted = true; break end
+
+            if has_encrypted then
+                -- Build explicit column list with decryption
+                local select_parts = {}
+                for col_name, _ in pairs(columns) do
+                    local col_ref = Quoting.quoteIdentifier(col_name)
+                    if fields[col_name] then
+                        -- Encrypted column: wrap with decryption
+                        local key = Encryption.getKey()
+                        select_parts[#select_parts + 1] = string.format(
+                            "pgp_sym_decrypt(%s, '%s') AS %s",
+                            col_ref, key:gsub("'", "''"), col_ref
+                        )
+                    else
+                        select_parts[#select_parts + 1] = col_ref
+                    end
+                end
+                sql[#sql + 1] = select_prefix .. " " .. table.concat(select_parts, ", ")
+            else
+                sql[#sql + 1] = select_prefix .. " *"
+            end
+        else
+            sql[#sql + 1] = select_prefix .. " *"
+        end
     end
 
     -- FROM clause
@@ -292,9 +325,17 @@ function PostgreSQL:generateInsert(table_name, data, entity)
     local bindings = {}
     local i = 1
 
+    local Encryption = require("jade.encryption")
+    local encrypt_cols = entity and entity._encrypt_cols or {}
+
     for key, value in pairs(data) do
         columns[#columns + 1] = Quoting.quoteIdentifier(key)
-        placeholders[#placeholders + 1] = "$" .. i
+        if encrypt_cols[key] and Encryption.isEnabled() then
+            -- Use pgcrypto encryption function
+            placeholders[#placeholders + 1] = "pgp_sym_encrypt($" .. i .. "::text, '" .. Encryption.getKey():gsub("'", "''") .. "')"
+        else
+            placeholders[#placeholders + 1] = "$" .. i
+        end
         bindings[#bindings + 1] = value
         i = i + 1
     end
@@ -458,8 +499,15 @@ function PostgreSQL:generateUpdate(table_name, data, where)
     local bindings = {}
     local i = 1
 
+    local Encryption = require("jade.encryption")
+    local encrypt_cols = {}  -- Will be set by entity if needed
+
     for key, value in pairs(data) do
-        set_parts[#set_parts + 1] = Quoting.quoteIdentifier(key) .. " = $" .. i
+        if encrypt_cols[key] and Encryption.isEnabled() then
+            set_parts[#set_parts + 1] = Quoting.quoteIdentifier(key) .. " = pgp_sym_encrypt($" .. i .. "::text, '" .. Encryption.getKey():gsub("'", "''") .. "')"
+        else
+            set_parts[#set_parts + 1] = Quoting.quoteIdentifier(key) .. " = $" .. i
+        end
         bindings[#bindings + 1] = value
         i = i + 1
     end

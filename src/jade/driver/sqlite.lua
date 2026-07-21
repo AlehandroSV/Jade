@@ -4,6 +4,7 @@ local Quoting = require("jade.util.quoting")
 
 local SQLite = {}
 SQLite.__index = SQLite
+SQLite._driver_type = "sqlite"
 
 setmetatable(SQLite, {
     __index = Driver,

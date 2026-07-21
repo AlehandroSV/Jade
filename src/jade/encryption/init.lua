@@ -1,15 +1,14 @@
 local M = {}
 
--- WARNING: XOR+base64 is obfuscation, NOT encryption.
--- For production use requiring real security, integrate with a cryptographic library.
--- This module is provided for basic data masking and convenience only.
-
--- Encryption config
+-- Encryption configuration
 local enc_config = {
     key = nil,
-    algorithm = "xor",
+    algorithm = "aes",  -- "aes" for database-native encryption
     database_encrypted = false,
     fields = {},
+    -- PostgreSQL: requires pgcrypto extension
+    -- MySQL: uses AES_ENCRYPT/AES_DECRYPT
+    -- SQLite: NOT supported (use SQLCipher or external encryption)
 }
 
 -- Column-level encryption markers
@@ -80,148 +79,141 @@ function M.getEncryptedFields(entity_name, columns)
     return fields
 end
 
--- XOR-based encrypt/decrypt (simple, no external deps)
--- Lua 5.1 compatible XOR for bytes using arithmetic
-local function xorByte(a, b)
-    local result = 0
-    local power = 1
-    for _ = 1, 8 do
-        local abit = a % 2
-        local bbit = b % 2
-        if abit ~= bbit then
-            result = result + power
-        end
-        a = math.floor(a / 2)
-        b = math.floor(b / 2)
-        power = power * 2
+-- Get the encryption key
+function M.getKey()
+    return enc_config.key
+end
+
+-- Check if encryption is enabled
+function M.isEnabled()
+    return enc_config.key ~= nil and enc_config.key ~= ""
+end
+
+--- Wrap a column reference with encryption function for INSERT/UPDATE
+--- @param column_ref string The quoted column reference (e.g., '"email"')
+--- @param driver table The database driver
+--- @return string SQL fragment with encryption
+function M.wrapEncrypt(column_ref, driver)
+    if not M.isEnabled() then
+        return column_ref
     end
-    return result
-end
 
-local function xorCrypt(data, key)
-    if not key or key == "" then return data end
-    local result = {}
-    local keyLen = #key
-    for i = 1, #data do
-        local dataByte = string.byte(data, i)
-        local keyByte = string.byte(key, (i - 1) % keyLen + 1)
-        result[i] = string.char(xorByte(dataByte, keyByte))
+    local key = enc_config.key
+    local driver_type = driver._driver_type or "postgresql"
+
+    if driver_type == "postgresql" then
+        -- PostgreSQL: pgcrypto extension required
+        -- CREATE EXTENSION IF NOT EXISTS pgcrypto;
+        return string.format("pgp_sym_encrypt(%s::text, '%s')", column_ref, key:gsub("'", "''"))
+    elseif driver_type == "mysql" then
+        -- MySQL: native AES_ENCRYPT
+        return string.format("AES_ENCRYPT(%s, '%s')", column_ref, key:gsub("'", "''"))
+    else
+        -- SQLite and others: no native encryption support
+        error("Database encryption is not supported for " .. driver_type .. ". Use PostgreSQL with pgcrypto or MySQL.")
     end
-    return table.concat(result)
 end
 
--- Base64 encode
-local b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-local function base64Encode(data)
-    local result = {}
-    local i = 1
-    while i <= #data do
-        local a, b, c = string.byte(data, i, i + 2)
-        local padding = 3 - (#data - i + 1)
-        if padding > 0 then c = 0 end
-        if padding > 1 then b = 0 end
-        local n = a * 65536 + b * 256 + c
-        result[#result + 1] = string.sub(b64chars, math.floor(n / 262144) % 64 + 1, math.floor(n / 262144) % 64 + 1)
-        result[#result + 1] = string.sub(b64chars, math.floor(n / 4096) % 64 + 1, math.floor(n / 4096) % 64 + 1)
-        if padding < 2 then
-            result[#result + 1] = string.sub(b64chars, math.floor(n / 64) % 64 + 1, math.floor(n / 64) % 64 + 1)
-        else
-            result[#result + 1] = "="
-        end
-        if padding < 1 then
-            result[#result + 1] = string.sub(b64chars, n % 64 + 1, n % 64 + 1)
-        else
-            result[#result + 1] = "="
-        end
-        i = i + 3
+--- Wrap a column reference with decryption function for SELECT
+--- @param column_ref string The quoted column reference (e.g., '"email"')
+--- @param driver table The database driver
+--- @param as_name string Optional alias for the decrypted column
+--- @return string SQL fragment with decryption
+function M.wrapDecrypt(column_ref, driver, as_name)
+    if not M.isEnabled() then
+        return column_ref
     end
-    return table.concat(result)
+
+    local key = enc_config.key
+    local driver_type = driver._driver_type or "postgresql"
+    local alias = as_name and (" AS " .. as_name) or ""
+
+    if driver_type == "postgresql" then
+        -- PostgreSQL: pgcrypto extension required
+        return string.format("pgp_sym_decrypt(%s, '%s')%s", column_ref, key:gsub("'", "''"), alias)
+    elseif driver_type == "mysql" then
+        -- MySQL: native AES_DECRYPT (returns binary, need CAST)
+        return string.format("CAST(AES_DECRYPT(%s, '%s') AS CHAR)%s", column_ref, key:gsub("'", "''"), alias)
+    else
+        error("Database decryption is not supported for " .. driver_type .. ". Use PostgreSQL with pgcrypto or MySQL.")
+    end
 end
 
--- Base64 decode
-local b64lookup = {}
-for i = 1, 64 do b64lookup[string.byte(b64chars, i)] = i - 1 end
-local function base64Decode(data)
-    data = data:gsub("%s+", ""):gsub("=", "")
-    local result = {}
-    for i = 1, #data, 4 do
-        local a = b64lookup[string.byte(data, i)] or 0
-        local b = b64lookup[string.byte(data, i + 1)] or 0
-        local c = b64lookup[string.byte(data, i + 2)] or 0
-        local d = b64lookup[string.byte(data, i + 3)] or 0
-        local n = a * 262144 + b * 4096 + c * 64 + d
-        result[#result + 1] = string.char(math.floor(n / 65536) % 256)
-        if i + 2 <= #data then
-            result[#result + 1] = string.char(math.floor(n / 256) % 256)
+--- Check if a SELECT item needs decryption wrapping
+--- @param item string|table The select item
+--- @param entity_name string The entity/table name
+--- @param columns table The entity columns
+--- @param driver table The database driver
+--- @return string, table The resolved SQL fragment and any bindings
+function M.resolveSelectItem(item, entity_name, columns, driver)
+    if not M.isEnabled() then
+        return nil, nil  -- No encryption, use default handling
+    end
+
+    if type(item) == "string" then
+        -- Check if this column is encrypted
+        if M.isEncrypted(entity_name, item) then
+            local Quoting = require("jade.util.quoting")
+            local col_ref = Quoting.quoteIdentifier(item)
+            return M.wrapDecrypt(col_ref, driver, Quoting.quoteIdentifier(item)), {}
         end
-        if i + 3 <= #data then
-            result[#result + 1] = string.char(n % 256)
+    elseif type(item) == "table" and item._column then
+        -- Expression with column reference
+        if M.isEncrypted(entity_name, item._column) then
+            local Quoting = require("jade.util.quoting")
+            local col_ref = Quoting.quoteIdentifier(item._column)
+            local alias = item._alias and (" AS " .. Quoting.quoteIdentifier(item._alias)) or ""
+            return M.wrapDecrypt(col_ref, driver, nil) .. alias, {}
         end
     end
-    return table.concat(result)
+
+    return nil, nil  -- Not encrypted, use default handling
 end
 
--- Encrypt a value
-function M.encrypt(value, key)
-    if value == nil then return nil end
-    if type(value) ~= "string" then value = tostring(value) end
-    key = key or enc_config.key
-    if not key then return value end
-    local encrypted = xorCrypt(value, key)
-    return "ENC:" .. base64Encode(encrypted)
-end
+--- Prepare data for INSERT by wrapping encrypted columns
+--- @param data table The input data
+--- @param entity_name string The entity/table name
+--- @param columns table The entity columns
+--- @param driver table The database driver
+--- @return table, table Modified data with encryption markers, and bindings
+function M.prepareInsert(data, entity_name, columns, driver)
+    if not M.isEnabled() then
+        return data, {}
+    end
 
--- Decrypt a value
-function M.decrypt(value, key)
-    if value == nil then return nil end
-    if type(value) ~= "string" then return value end
-    if value:sub(1, 4) ~= "ENC:" then return value end
-    key = key or enc_config.key
-    if not key then return value:sub(5) end
-    local encoded = value:sub(5)
-    local encrypted = base64Decode(encoded)
-    return xorCrypt(encrypted, key)
-end
-
--- Check if a value is encrypted
-function M.isEncryptedValue(value)
-    if type(value) ~= "string" then return false end
-    return value:sub(1, 4) == "ENC:"
-end
-
--- Encrypt data fields based on entity config
-function M.encryptFields(entity_name, data, columns)
     local fields = M.getEncryptedFields(entity_name, columns)
     local result = {}
+    local bindings = {}
+    local encrypt_cols = {}
+
     for k, v in pairs(data) do
-        if fields[k] and not M.isEncryptedValue(v) then
-            result[k] = M.encrypt(v)
+        if fields[k] then
+            -- Mark this column for encryption in SQL generation
+            encrypt_cols[k] = true
+            result[k] = v  -- Keep the raw value, driver will wrap with encryption
         else
             result[k] = v
         end
     end
-    return result
+
+    return result, encrypt_cols
 end
 
--- Decrypt data fields based on entity config
-function M.decryptFields(entity_name, data, columns)
-    local fields = M.getEncryptedFields(entity_name, columns)
-    local result = {}
-    for k, v in pairs(data) do
-        if fields[k] and M.isEncryptedValue(v) then
-            result[k] = M.decrypt(v)
-        else
-            result[k] = v
-        end
-    end
-    return result
+--- Prepare data for UPDATE by wrapping encrypted columns
+--- @param data table The input data
+--- @param entity_name string The entity/table name
+--- @param columns table The entity columns
+--- @param driver table The database driver
+--- @return table, table Modified data with encryption markers, and bindings
+function M.prepareUpdate(data, entity_name, columns, driver)
+    return M.prepareInsert(data, entity_name, columns, driver)  -- Same logic
 end
 
 -- Clear config (for testing)
 function M.clear()
     enc_config = {
         key = nil,
-        algorithm = "xor",
+        algorithm = "aes",
         database_encrypted = false,
         fields = {},
     }
